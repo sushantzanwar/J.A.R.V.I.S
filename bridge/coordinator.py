@@ -5,11 +5,17 @@ session. This process cannot wake an inactive Codex chat.
 """
 import argparse
 import json
+import sys
 import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 
 import bridge
 import coordination
 import mcp_server
+from jarvis.worker.log import JsonLog
 
 
 def run_once():
@@ -25,21 +31,35 @@ def main() -> int:
     parser.add_argument("--interval", type=int, default=30, help="seconds between --loop polls")
     parser.add_argument("--max-idle-polls", type=int, default=20,
                         help="stop --loop after this many idle or paused polls (default: 20)")
+    parser.add_argument("--log-file", default=str(Path(__file__).resolve().parents[1] / "logs" / "coordinator.jsonl"))
     args = parser.parse_args()
+    log = JsonLog(args.log_file)
+    log.event("coordinator_start", loop=args.loop)
     try:
         idle = 0
         while True:
             outcomes = run_once()
             for outcome in outcomes:
                 print(json.dumps(outcome), flush=True)
+                log.event("coordinator_outcome", **outcome)
+            log.event("coordinator_pass", outcomes=len(outcomes),
+                      paused=(bridge.TASKS.parent / "PAUSE").exists())
             if not args.loop:
+                log.event("coordinator_stop", reason="single_pass")
                 return 0
             idle = idle + 1 if not outcomes or all(o["state"] == "waiting_policy" for o in outcomes) else 0
             if idle >= max(1, args.max_idle_polls):
+                log.event("coordinator_stop", reason="idle_limit")
                 return 0
             time.sleep(max(1, args.interval))
     except KeyboardInterrupt:
+        log.event("coordinator_stop", reason="interrupted")
         return 0
+    except Exception as exc:
+        # State and task data are preserved; the scheduler will invoke a fresh
+        # pass later and its task result makes the failure visible.
+        log.event("coordinator_error", error=type(exc).__name__)
+        return 1
 
 
 if __name__ == "__main__":

@@ -89,6 +89,12 @@ while you are logged on. Each pass:
 5. checks the provider only if something is eligible, runs each task through `claude -p` with its tier's tools,
    and records the result, notes, run id and structured log events.
 
+The same installer also registers `JarvisCoordinator` with the same current-user,
+non-elevated triggers and `IgnoreNew` instance policy. It runs one coordinator
+pass at logon and on the recurring cadence, logs to `logs/coordinator.jsonl`,
+and relies on persistent coordination state for recovery after a later scheduled
+restart. It does not start Claude, run a second worker, or wake Codex.
+
 The worker never approves anything. Approval is `python bridge\admin.py approve <id>`, which shows the task and
 asks y/N in your terminal.
 
