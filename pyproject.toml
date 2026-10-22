@@ -1,0 +1,7 @@
+[project]
+name = "jarvis"
+version = "0.1.0"
+description = "Personal AI assistant for Windows"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = ["PySide6>=6.7,<7"]

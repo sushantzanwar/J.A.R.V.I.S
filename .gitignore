@@ -1,0 +1,72 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Secrets and local config
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets.*
+credentials*.json
+
+# Logs and local state
+*.log
+logs/
+.jarvis/
+bridge/locks/
+*.tmp
+data/local/
+
+# More secrets: keys, certificates, tokens
+*.pfx
+*.p12
+*.keystore
+id_rsa*
+id_ed25519*
+*.token
+
+# Live bridge state: the task queue, approvals and results are runtime data, not source.
+# Keeping them out of Git means rolling code back can never rewind or erase an approval.
+# (They are copied by the backup step instead.)
+bridge/tasks/
+bridge/PAUSE
+# Local worker policy: written by the human on this machine; only the .example file is versioned
+bridge/command_allowlist.json
+
+# Local databases and their recovery copies (chat history, preferences)
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-wal
+*.db-shm
+*.db.bak-*
+*.db.corrupt-*
+
+# Local agent / assistant state
+.claude/
+.codex/
+
+# Windows / editors
+.DS_Store
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
+.idea/
+.vscode/
