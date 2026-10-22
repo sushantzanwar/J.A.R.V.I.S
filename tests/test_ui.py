@@ -39,6 +39,7 @@ class UiTests(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
+        cls.backend.shutdown()
         cls.engine.deleteLater()
         cls.tmp.cleanup()
 

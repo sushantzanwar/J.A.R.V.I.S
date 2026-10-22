@@ -15,15 +15,18 @@ def gui_app():
     return QGuiApplication.instance() or QGuiApplication([])
 
 
-def pump(cond=lambda: False, timeout: float = 3.0, minimum: float = 0.0) -> bool:
+def pump(cond=None, timeout: float = 3.0, minimum: float = 0.0) -> bool:
+    """Run the event loop until cond() is true (and at least `minimum` seconds passed).
+    With no condition it simply runs the loop for `minimum` seconds."""
     start = time.time()
-    end = start + timeout
+    end = start + (timeout if cond else minimum)
     while time.time() < end:
         QCoreApplication.processEvents()
-        if cond() and time.time() - start >= minimum:
+        if cond and cond() and time.time() - start >= minimum:
             return True
-        time.sleep(0.01)
-    return cond()
+        time.sleep(0.005)
+    QCoreApplication.processEvents()
+    return cond() if cond else True
 
 
 class FakeProvider(ModelProvider):

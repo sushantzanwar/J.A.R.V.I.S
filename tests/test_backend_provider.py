@@ -49,6 +49,7 @@ class BackendProviderTests(unittest.TestCase):
     def make(self, provider):
         d = tempfile.mkdtemp()
         b = Backend(Path(d), provider)
+        self.addCleanup(b.shutdown)
         self.assertTrue(pump(lambda: b.providerState != "checking"))
         return b
 

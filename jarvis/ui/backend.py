@@ -49,6 +49,7 @@ class Backend(QObject):
     def __init__(self, tasks_dir: Path = DEFAULT_TASKS_DIR, provider: ModelProvider | None = None, parent=None,
                  *, store: Store | None = None, factory=make_provider):
         super().__init__(parent)
+        self._closing = False   # set by shutdown(): late results from worker threads are dropped
         self._tasks_dir = Path(tasks_dir)
         self._bridge_dir = self._tasks_dir.parent
         self._worker_log = self._bridge_dir.parent / "logs" / "worker.jsonl"
@@ -83,6 +84,17 @@ class Backend(QObject):
         QTimer.singleShot(400, self.refreshStatus)  # CPU load needs a second sample for a baseline
         self._status_timer.start()
         self._tasks_timer.start()
+
+    def shutdown(self) -> None:
+        """Stop timers and ignore anything background threads deliver from now on. Call before the application
+        (or the engine that owns this object) goes away, so a request still running cannot signal a dead object."""
+        self._closing = True
+        self._status_timer.stop()
+        self._tasks_timer.stop()
+
+    def _emit_from_thread(self, signal, *args) -> None:
+        if not self._closing:
+            signal.emit(*args)
 
     # ---- helpers
     @staticmethod
@@ -221,9 +233,10 @@ class Backend(QObject):
         def check():
             try:
                 st = provider.status()
-                self._providerChecked.emit(provider.name, st.state, st.detail)
+                self._emit_from_thread(self._providerChecked, provider.name, st.state, st.detail)
             except Exception as e:  # status() should never raise; stay truthful if it does
-                self._providerChecked.emit(provider.name, ERROR, f"status check failed: {type(e).__name__}")
+                self._emit_from_thread(self._providerChecked, provider.name, ERROR,
+                                       f"status check failed: {type(e).__name__}")
         threading.Thread(target=check, daemon=True).start()
 
     @Slot()
@@ -352,10 +365,11 @@ class Backend(QObject):
         try:
             return provider.generate(text)
         except ProviderError as e:
-            self._providerChecked.emit(provider.name, ERROR, f"last request failed: {e}")
+            self._emit_from_thread(self._providerChecked, provider.name, ERROR, f"last request failed: {e}")
             return f"Language model error: {e}"
         except Exception as e:
-            self._providerChecked.emit(provider.name, ERROR, f"last request failed: {type(e).__name__}")
+            self._emit_from_thread(self._providerChecked, provider.name, ERROR,
+                                   f"last request failed: {type(e).__name__}")
             return f"Language model error: {type(e).__name__}"
 
     def _start(self, produce, delay: int):
@@ -363,11 +377,11 @@ class Backend(QObject):
         self._set_orb("thinking")
 
         def work():
-            self._answerReady.emit(produce())
+            self._emit_from_thread(self._answerReady, produce())
 
         if delay:
             ans = produce()
-            QTimer.singleShot(delay, lambda: self._answerReady.emit(ans))
+            QTimer.singleShot(delay, lambda: self._emit_from_thread(self._answerReady, ans))
         else:
             threading.Thread(target=work, daemon=True).start()
 

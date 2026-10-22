@@ -8,6 +8,7 @@ from pathlib import Path
 from tests.qt_helpers import FakeProvider, gui_app, pump
 
 from PySide6.QtCore import QMetaObject, QObject, Qt, qInstallMessageHandler  # noqa: E402
+from PySide6.QtQuick import QQuickItem  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 
 from jarvis.app import QML_DIR, build  # noqa: E402
@@ -64,15 +65,31 @@ class QmlCase(unittest.TestCase):
     def load(self, provider=None, store=None):
         provider = provider or FakeProvider(name="offline", state="builtin", detail="built-in responder")
         self.engine, self.backend = build(self.tasks, provider, store or self.store)
-        self.addCleanup(self.engine.deleteLater)
+        self.addCleanup(self._teardown, self.engine, self.backend)
         self.assertTrue(self.engine.rootObjects(), "\n".join(QmlCase.messages))
         self.win = self.engine.rootObjects()[0]
         pump(lambda: self.backend.providerState != "checking")
         pump(minimum=0.3)
         return self.win
 
+    @staticmethod
+    def _teardown(engine, backend):
+        """Stop the backend first, then let the engine be destroyed while everything it references is still alive."""
+        backend.shutdown()
+        engine.deleteLater()
+        pump(minimum=0.1)
+
     def child(self, name):
+        """Find a QML object by objectName. Items made by a Repeater are not QObject children of the window,
+        so fall back to walking the visual item tree (including the popup overlay)."""
         obj = self.win.findChild(QObject, name)
+        if obj is None:
+            stack = list(self.win.findChildren(QQuickItem)) + [self.win.contentItem()]
+            while stack and obj is None:
+                item = stack.pop()
+                if item.objectName() == name:
+                    obj = item
+                stack.extend(item.childItems())
         self.assertIsNotNone(obj, f"no QML object named {name}")
         return obj
 

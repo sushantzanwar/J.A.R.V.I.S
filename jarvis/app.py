@@ -40,6 +40,7 @@ def main(argv: list[str] | None = None) -> int:
     if not engine.rootObjects():
         print("Jarvis: failed to load the interface (see QML errors above).", file=sys.stderr)
         return 1
+    app.aboutToQuit.connect(backend.shutdown)   # a request still running must not signal a dying object
     code = app.exec()
     store.close()
     return code

@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 
 from tests.qt_helpers import FakeProvider, gui_app, pump
+from PySide6.QtCore import QMetaMethod
 
 from jarvis.core.store import Store  # noqa: E402
 from jarvis.ui import backend as backend_mod  # noqa: E402
@@ -39,6 +40,7 @@ class WorkspaceCase(unittest.TestCase):
         provider = provider or FakeProvider(name="offline", state="builtin", detail="built-in responder")
         b = Backend(self.tasks, provider, store=store or self.store(),
                     factory=factory or (lambda name: FakeProvider(name=name)))
+        self.addCleanup(b.shutdown)     # runs before the store is closed (cleanups run in reverse order)
         self.assertTrue(pump(lambda: b.providerState != "checking"))
         return b
 
@@ -254,11 +256,20 @@ class DiagnosticsAndSafetyTests(WorkspaceCase):
 
     def test_backend_exposes_no_approval_or_execution_surface(self):
         public = [n for n, _ in inspect.getmembers(Backend) if not n.startswith("_")]
-        read_only_worker = {"workerState", "refreshWorker"}               # visibility only: no start/stop/pause controls
-        for name in public:
+        # What QML can actually do to the backend = its slots/invokables and its properties. Signals are only
+        # notifications and cannot perform actions, so they are not part of the control surface.
+        mo = Backend.staticMetaObject
+        actions = {bytes(mo.method(i).name()).decode() for i in range(mo.methodOffset(), mo.methodCount())
+                   if mo.method(i).methodType() in (QMetaMethod.MethodType.Slot, QMetaMethod.MethodType.Method)}
+        props = {mo.property(i).name() for i in range(mo.propertyOffset(), mo.propertyCount())}
+        self.assertIn("send", actions)                                      # the introspection is really seeing slots
+        self.assertIn("workerState", props)
+        read_only_worker = {"workerState", "refreshWorker"}                 # visibility only: no start/stop/pause
+        for name in actions | props | set(public):
             self.assertNotRegex(name.lower(), r"approve|exec|shell|command|subprocess|^run|allow", f"Backend.{name}")
+        for name in (actions | props) - {"workerChanged"}:
             if "worker" in name.lower():
-                self.assertIn(name, read_only_worker)
+                self.assertIn(name, read_only_worker, f"unexpected worker control: {name}")
         src = inspect.getsource(backend_mod)
         self.assertNotRegex(src, r"\bsubprocess\b|os\.system|admin\.py\s+approve|--allow-")
 
