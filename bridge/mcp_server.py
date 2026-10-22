@@ -12,6 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import bridge  # noqa: E402  (existing task store, reused unchanged)
 import autonomy  # noqa: E402
+import coordination  # noqa: E402
 import result_monitor  # noqa: E402
 
 if os.environ.get("BRIDGE_TASKS_DIR"):
@@ -46,6 +47,8 @@ TOOLS = [
     tool("submit_followup", "Queue one bounded Codex follow-up for a recoverable MCP task failure.",
          {"parent_id": {"type": "integer"}, "title": {"type": "string"}, "body": {"type": "string"},
           "needs": {"type": "string", "enum": list(NEEDS)}}, ["parent_id", "title", "body"], False),
+    tool("coordinate_task_events", "Process persisted task result events and submit permitted bounded follow-ups.",
+         {}, [], False),
 ]
 
 
@@ -93,6 +96,11 @@ def call(name, a):
     if name == "list_task_events":
         state = bridge.TASKS.parent / "monitor_state.json"
         return result_monitor.events(bridge.TASKS, state, a.get("limit", 50))
+    if name == "coordinate_task_events":
+        return coordination.process_once(
+            bridge.TASKS, bridge.TASKS.parent / coordination.STATE_FILE,
+            lambda request: call("submit_followup", request),
+        )
     if name == "submit_followup":
         parent_id = int(a.get("parent_id", 0))
         parent = next((t for t in bridge.all_tasks() if t["id"] == parent_id), None)

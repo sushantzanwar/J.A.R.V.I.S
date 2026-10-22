@@ -64,6 +64,19 @@ The bridge records events for polling; it cannot wake or resume an inactive
 Codex chat. A connected Codex session must poll `list_task_events` to decide
 whether a bounded follow-up is appropriate.
 
+`coordinate_task_events` is the resumable consumer for that history. On each
+active Codex call (or `python bridge/coordinator.py` local pass), it persists an
+explicit outcome for every event: `completed`, `followup_submitted`,
+`retry_exhausted`, `ignored`, or `waiting_policy`. For a trusted recoverable
+failure it submits one deterministic same-tier retry through the existing
+`submit_followup` tool; the autonomy policy, PAUSE file, duplicate-child check,
+and `max_followups` remain authoritative. `waiting_policy` is deliberately
+retried after a later resume; terminal outcomes are not duplicated after a
+process restart. Passes are serialized with an OS lock. `python
+bridge/coordinator.py --loop` is an optional supervised local poller; by default
+it exits after 20 idle or paused polls. It is not a mechanism to wake an
+inactive Codex chat.
+
 ### What happens automatically
 
 Once the scheduled task is installed (section 3.5), Windows runs one worker pass at logon and every 10 minutes

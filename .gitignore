@@ -47,6 +47,7 @@ id_ed25519*
 bridge/tasks/
 bridge/PAUSE
 bridge/monitor_state.json
+bridge/coordination_state.json
 # Local worker policy: written by the human on this machine; only the .example file is versioned
 bridge/command_allowlist.json
 
