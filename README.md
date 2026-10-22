@@ -34,6 +34,11 @@ permission tiers) are documented, with limits, in [docs/AUTOMATION.md](docs/AUTO
 (`scripts/jarvis-scheduler.ps1`), with OS-level locks, crash recovery, bounded retries, structured logs in
 `logs/worker.jsonl`, and an allowlist-only `commands` tier that is never scheduled. See docs/AUTOMATION.md section 3.
 
+**Task 9: local-first workspace and release tooling.** Persistent chat history, preferences and an activity
+timeline (local SQLite, outside the repo, with corruption and migration recovery), a settings and diagnostics
+screen, keyboard shortcuts and accessible labels, plus `scripts\setup.ps1`, `run-tests.ps1` and `build.ps1`.
+See [docs/RELEASE.md](docs/RELEASE.md).
+
 ## Requirements
 
 - Python 3.12 or newer

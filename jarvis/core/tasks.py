@@ -1,9 +1,20 @@
 """Read-only view of the bridge task queue. Approval and completion stay in bridge/admin.py."""
 import json
+import os
+import sys
 import time
 from pathlib import Path
 
-DEFAULT_TASKS_DIR = Path(__file__).resolve().parents[2] / "bridge" / "tasks"
+
+def project_root() -> Path:
+    """The source checkout. A packaged build has no bridge folder of its own, so it uses JARVIS_HOME
+    (the project folder) or, failing that, the folder holding the executable."""
+    if getattr(sys, "frozen", False):
+        return Path(os.environ.get("JARVIS_HOME") or Path(sys.executable).resolve().parent)
+    return Path(__file__).resolve().parents[2]
+
+
+DEFAULT_TASKS_DIR = project_root() / "bridge" / "tasks"
 TONES = ("cyan", "ice", "violet", "muted")
 
 

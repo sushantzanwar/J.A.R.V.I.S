@@ -56,6 +56,30 @@ class DescribeTests(unittest.TestCase):
             self.assertEqual(before, {p.name: p.read_bytes() for p in d.iterdir()})
 
 
+class ProjectRootTests(unittest.TestCase):
+    def test_source_checkout_root_has_the_bridge(self):
+        from jarvis.core.tasks import DEFAULT_TASKS_DIR, project_root
+        self.assertTrue((project_root() / "bridge").is_dir())
+        self.assertEqual(DEFAULT_TASKS_DIR, project_root() / "bridge" / "tasks")
+
+    def test_packaged_build_uses_jarvis_home_then_the_exe_folder(self):
+        import os
+        import sys
+        from jarvis.core.tasks import project_root
+        old_home = os.environ.pop("JARVIS_HOME", None)
+        sys.frozen = True
+        try:
+            os.environ["JARVIS_HOME"] = r"C:\somewhere\project"
+            self.assertEqual(project_root(), Path(r"C:\somewhere\project"))
+            del os.environ["JARVIS_HOME"]
+            self.assertEqual(project_root(), Path(sys.executable).resolve().parent)
+        finally:
+            del sys.frozen
+            os.environ.pop("JARVIS_HOME", None)
+            if old_home is not None:
+                os.environ["JARVIS_HOME"] = old_home
+
+
 class WorkerStateTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
