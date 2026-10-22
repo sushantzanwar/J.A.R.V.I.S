@@ -50,6 +50,20 @@ After changing bridge Python code, restart the JARVIS MCP server in Codex
 Settings before using the new behavior; an already-running stdio server does
 not hot-reload source files.
 
+### 3.0.1 Result monitoring and bounded follow-ups
+
+`list_task_events` exposes a persistent, deduplicated history of completed and
+recoverable-failure task events to Codex. `submit_followup` can create one
+same-tier child task only for a recoverable failure from the trusted MCP flow.
+`max_followups` in `autonomy_policy.json` limits each chain (default: 2), and
+an existing child prevents a duplicate. Follow-ups use the same policy and
+therefore still stop at `bridge/PAUSE`; commands remain human-approved and
+allowlist-only.
+
+The bridge records events for polling; it cannot wake or resume an inactive
+Codex chat. A connected Codex session must poll `list_task_events` to decide
+whether a bounded follow-up is appropriate.
+
 ### What happens automatically
 
 Once the scheduled task is installed (section 3.5), Windows runs one worker pass at logon and every 10 minutes

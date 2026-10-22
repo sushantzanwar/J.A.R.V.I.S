@@ -12,6 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import bridge  # noqa: E402  (existing task store, reused unchanged)
 import autonomy  # noqa: E402
+import result_monitor  # noqa: E402
 
 if os.environ.get("BRIDGE_TASKS_DIR"):
     bridge.TASKS = Path(os.environ["BRIDGE_TASKS_DIR"])
@@ -40,6 +41,11 @@ TOOLS = [
     tool("get_task_result", "Result text of a finished task.",
          {"id": {"type": "integer"}}, ["id"], True),
     tool("list_tasks", "List all tasks with status and approval state.", {}, [], True),
+    tool("list_task_events", "List persisted completion and recoverable-failure events for Codex polling.",
+         {"limit": {"type": "integer"}}, [], True),
+    tool("submit_followup", "Queue one bounded Codex follow-up for a recoverable MCP task failure.",
+         {"parent_id": {"type": "integer"}, "title": {"type": "string"}, "body": {"type": "string"},
+          "needs": {"type": "string", "enum": list(NEEDS)}}, ["parent_id", "title", "body"], False),
 ]
 
 
@@ -52,8 +58,7 @@ def view(t):
     return out
 
 
-def call(name, a):
-    if name == "submit_task":
+def _submit(a, source="mcp", parent=None):
         title, body = str(a.get("title", "")).strip(), str(a.get("body", "")).strip()
         needs = a.get("needs", "read-only")
         if not title or len(title) > MAX_TITLE or len(body) > MAX_BODY or needs not in NEEDS:
@@ -65,11 +70,14 @@ def call(name, a):
             return {**view(dup), "duplicate": True, "message": "Identical task already queued; no new task created."}
         if sum(1 for t in tasks if t["status"] != "done") >= MAX_OPEN:
             raise ValueError("too many open tasks; ask the human to clear the queue")
-        auto_approved = autonomy.permits("mcp", needs, bridge.TASKS)
+        auto_approved = autonomy.permits(source, needs, bridge.TASKS)
         t = {"id": max([x["id"] for x in tasks], default=0) + 1, "title": bridge.redact(title),
              "body": bridge.redact(body), "status": "pending", "created": bridge.now(),
              "updated": bridge.now(), "notes": [], "approved": auto_approved, "needs": needs,
-             "source": "mcp", "idem_key": key}
+             "source": source, "idem_key": key}
+        if parent is not None:
+            t["parent_id"] = parent["id"]
+            t["followup_attempt"] = int(parent.get("followup_attempt", 0)) + 1
         if auto_approved:
             t["approval_origin"] = "autonomy-policy-v1"
             t["notes"].append({"at": bridge.now(), "text": "auto-approved by autonomy policy"})
@@ -77,6 +85,33 @@ def call(name, a):
         message = "Queued and auto-approved by autonomy policy." if auto_approved else \
             "Queued. Waiting for local human approval (python bridge\\admin.py approve %d)." % t["id"]
         return {**view(t), "message": message}
+
+
+def call(name, a):
+    if name == "submit_task":
+        return _submit(a)
+    if name == "list_task_events":
+        state = bridge.TASKS.parent / "monitor_state.json"
+        return result_monitor.events(bridge.TASKS, state, a.get("limit", 50))
+    if name == "submit_followup":
+        parent_id = int(a.get("parent_id", 0))
+        parent = next((t for t in bridge.all_tasks() if t["id"] == parent_id), None)
+        if not parent:
+            raise ValueError("no such parent task")
+        if parent.get("source") not in ("mcp", "mcp-followup"):
+            raise ValueError("parent was not submitted by the trusted MCP flow")
+        event = result_monitor.classify(parent)
+        if not event or event[0] != "recoverable_failure":
+            raise ValueError("parent has no recoverable failure")
+        policy = autonomy.load()
+        if int(parent.get("followup_attempt", 0)) >= policy["max_followups"]:
+            raise ValueError("follow-up retry limit reached")
+        if any(t.get("parent_id") == parent_id for t in bridge.all_tasks()):
+            raise ValueError("a follow-up already exists for this task")
+        needs = a.get("needs", parent.get("needs", "read-only"))
+        if needs != parent.get("needs", "read-only"):
+            raise ValueError("follow-up cannot change its permission tier")
+        return _submit({**a, "needs": needs}, source="mcp-followup", parent=parent)
     if name == "list_tasks":
         return [view(t) for t in bridge.all_tasks()]
     if name in ("get_task_status", "get_task_result"):

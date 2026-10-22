@@ -14,6 +14,7 @@ DEFAULT = {
     "enabled": True,
     "trusted_sources": ["mcp"],
     "auto_approve_needs": ["read-only", "file-changes"],
+    "max_followups": 2,
     "pause_file": "PAUSE",
 }
 SAFE_NEEDS = {"read-only", "file-changes"}
@@ -27,7 +28,8 @@ def load(path: Path = POLICY_FILE) -> dict:
     if not isinstance(data, dict) or data.get("version") != 1:
         return {**DEFAULT, "enabled": False}
     out = {**DEFAULT, **data}
-    if not isinstance(out["trusted_sources"], list) or not isinstance(out["auto_approve_needs"], list):
+    if not isinstance(out["trusted_sources"], list) or not isinstance(out["auto_approve_needs"], list) \
+            or not isinstance(out["max_followups"], int) or out["max_followups"] < 0:
         return {**DEFAULT, "enabled": False}
     return out
 

@@ -1,7 +1,8 @@
 {
   "version": 1,
   "enabled": true,
-  "trusted_sources": ["mcp"],
+  "trusted_sources": ["mcp", "mcp-followup"],
   "auto_approve_needs": ["read-only", "file-changes"],
+  "max_followups": 2,
   "pause_file": "PAUSE"
 }

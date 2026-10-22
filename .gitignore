@@ -46,6 +46,7 @@ id_ed25519*
 # (They are copied by the backup step instead.)
 bridge/tasks/
 bridge/PAUSE
+bridge/monitor_state.json
 # Local worker policy: written by the human on this machine; only the .example file is versioned
 bridge/command_allowlist.json
 
