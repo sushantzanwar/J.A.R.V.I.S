@@ -28,6 +28,7 @@ from pathlib import Path
 from jarvis.core.providers import CONNECTED, ModelProvider, ProviderError
 from jarvis.worker import allowlist
 from jarvis.worker.log import NullLog
+from jarvis.worker.workspaces import WorkspaceError, WorkspaceManager
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "bridge"))
@@ -56,7 +57,7 @@ class TaskWorker:
     def __init__(self, provider: ModelProvider, tasks_dir: Path = DEFAULT_TASKS_DIR,
                  allow_file_changes: bool = False, allow_commands: bool = False,
                  max_attempts: int = 3, backoff_base: float = 60.0, max_per_pass: int = 3,
-                 log=None, clock=time.time):
+                 log=None, clock=time.time, workspaces=None):
         self.provider = provider
         self.tasks_dir = Path(tasks_dir)
         self.lock_dir = self.tasks_dir.parent / "locks"
@@ -69,6 +70,7 @@ class TaskWorker:
         self.backoff_base = backoff_base
         self.log = log or NullLog()
         self.clock = clock
+        self.workspaces = workspaces or WorkspaceManager(ROOT)
 
     # ---- task store (same JSON format as bridge.py; saved atomically and flushed to disk)
     def _path(self, tid: int) -> Path:
@@ -222,6 +224,13 @@ class TaskWorker:
                     return Outcome(tid, "skipped", f"commands not permitted: {e}")
 
             run_id = uuid.uuid4().hex[:12]
+            workspace = None
+            if needs == "file-changes":
+                try:
+                    workspace = self.workspaces.prepare(tid, t.get("workspace"))
+                    t["workspace"] = {"path": str(workspace.path), "branch": workspace.branch}
+                except WorkspaceError as e:
+                    return self._fail(t, needs, f"workspace setup failed: {e}", retryable=False)
             t["status"], t["claimed_by"], t["last_run_id"] = "in-progress", "worker", run_id
             t.pop("next_attempt_at", None)
             self._note(t, f"worker started run {run_id} ({needs}, provider {self.provider.name})")
@@ -230,11 +239,20 @@ class TaskWorker:
             tools, allowed, disallowed = self.tools_for(needs, rules)
             t0 = time.time()
             try:
-                text = self.provider.run_task(self.build_prompt(t), tools, disallowed, allowed)
+                provider = self.provider.in_workdir(workspace.path) if workspace else self.provider
+                text = provider.run_task(self.build_prompt(t), tools, disallowed, allowed)
             except ProviderError as e:
                 return self._fail(t, needs, str(e), retryable=True)
             except Exception as e:  # anything unexpected: fail closed, no retry
                 return self._fail(t, needs, f"unexpected {type(e).__name__}", retryable=False)
+            if workspace:
+                try:
+                    checkpoint = self.workspaces.checkpoint_and_verify(workspace)
+                    merged = self.workspaces.integrate(workspace)
+                    t["workspace"].update({"checkpoint": checkpoint, "merged": merged})
+                    text += f"\nWorkspace checkpoint {checkpoint}; integrated as {merged}."
+                except WorkspaceError as e:
+                    return self._fail(t, needs, f"workspace verification/integration failed: {e}", retryable=False)
             t["status"], t["result"] = "done", bridge.redact(text)[:MAX_RESULT]
             t["completed_run_id"] = run_id
             t.pop("claimed_by", None)

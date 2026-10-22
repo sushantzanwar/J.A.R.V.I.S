@@ -119,5 +119,8 @@ class ClaudeCodeProvider(ModelProvider):
         return self.run(prompt, tools=tuple(tools), disallowed=tuple(disallowed),
                         allowed=None if allowed is None else tuple(allowed))
 
+    def in_workdir(self, path):
+        return ClaudeCodeProvider(exe=self._exe, cwd=Path(path), timeout=self._timeout, runner=self._run)
+
     def generate(self, prompt: str) -> str:
         return self.run(prompt, tools=(), system_prompt=CHAT_SYSTEM_PROMPT)

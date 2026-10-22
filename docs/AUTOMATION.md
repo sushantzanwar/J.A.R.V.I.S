@@ -163,6 +163,22 @@ Live runs against the real Claude Code CLI in a throwaway directory (not the pro
   redirect and an `&&` injection were refused;
 - pause, resume and status; duplicate MCP submission returned the same task id.
 
+### 3.7 Isolated file-change tasks
+
+An eligible `file-changes` task is prepared in `.jarvis/workspaces/task-<id>` on
+its own `jarvis/task-<id>` branch. Claude and the task's standard-library test
+run use that worktree, never the target checkout. A successful verification is
+committed as a task checkpoint, then integration is serialized with a separate
+lock and attempted only when the target checkout is clean and on `main`.
+
+Failed verification, timeout/crash recovery, a dirty target, or a merge
+conflict leaves both the task workspace and task branch intact. The task record
+keeps its workspace path and branch, so a later approved retry reuses the same
+work rather than resetting or discarding it. There is intentionally no automatic
+worktree removal, `git reset`, `git clean`, or forced merge. A conflict or dirty
+target therefore requires a person to resolve the preserved workspace before it
+can be retried or integrated.
+
 ## 4. Tests
 
 ```powershell

@@ -38,6 +38,10 @@ class ModelProvider(ABC):
         may run without a prompt (defaults to `tools`); everything else is denied. Providers that can't, refuse."""
         raise ProviderError(f"provider '{self.name}' cannot run tasks")
 
+    def in_workdir(self, path):
+        """Return a provider scoped to `path`; providers without process state are reusable."""
+        return self
+
 
 class OfflineProvider(ModelProvider):
     name = "offline"

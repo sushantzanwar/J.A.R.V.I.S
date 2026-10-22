@@ -8,6 +8,7 @@ from pathlib import Path
 from jarvis.core.providers import CONNECTED, DISCONNECTED, ModelProvider, ProviderError, ProviderStatus
 from jarvis.worker import worker as worker_mod
 from jarvis.worker.worker import TaskWorker
+from jarvis.worker.workspaces import Workspace, WorkspaceError
 
 
 class FakeProvider(ModelProvider):
@@ -46,8 +47,17 @@ class WorkerCase(unittest.TestCase):
     def get(self, i):
         return json.loads((self.tasks / f"{i:03d}.json").read_text(encoding="utf-8"))
 
+    class FakeWorkspaces:
+        def __init__(self, root): self.root, self.prepared = root, []
+        def prepare(self, tid, recorded=None):
+            self.prepared.append((tid, recorded))
+            return Workspace(tid, self.root, f"jarvis/task-{tid}")
+        def checkpoint_and_verify(self, workspace): return "checkpoint"
+        def integrate(self, workspace): return "merge"
+
     def worker(self, provider=None, **kw):
         self.provider = provider or FakeProvider()
+        kw.setdefault("workspaces", self.FakeWorkspaces(self.root))
         return TaskWorker(self.provider, tasks_dir=self.tasks, **kw)
 
 
@@ -145,11 +155,14 @@ class FailureRecoveryTests(WorkerCase):
         self.assertNotIn("secret detail", json.dumps(t["notes"]))
 
     def test_interrupted_file_changes_task_is_reset_unapproved(self):
-        self.add(1, status="in-progress", approved=True, needs="file-changes", claimed_by="worker")  # crashed, no lock
+        workspace = {"path": "C:/workspace/task-1", "branch": "jarvis/task-1"}
+        self.add(1, status="in-progress", approved=True, needs="file-changes", claimed_by="worker",
+                 workspace=workspace)  # crashed, no lock
         out = self.worker(allow_file_changes=True).process_once()
         self.assertEqual([o.action for o in out], ["recovered"])
         t = self.get(1)
         self.assertEqual((t["status"], t["approved"]), ("pending", False))
+        self.assertEqual(t["workspace"], workspace)
         self.assertEqual(self.provider.calls, [])      # not re-run without a fresh human approval
 
     def test_dead_lock_is_cleared(self):
@@ -211,6 +224,22 @@ class SafetyBoundaryTests(WorkerCase):
         for path in ("bridge/**", "jarvis/worker/**", ".git/**"):
             self.assertIn(f"Edit({path})", call["disallowed"])
             self.assertIn(f"Write({path})", call["disallowed"])
+
+    def test_file_changes_record_workspace_checkpoint_before_done(self):
+        self.add(1, approved=True, needs="file-changes")
+        self.worker(allow_file_changes=True).process_once()
+        t = self.get(1)
+        self.assertEqual(t["workspace"]["branch"], "jarvis/task-1")
+        self.assertEqual((t["workspace"]["checkpoint"], t["workspace"]["merged"]), ("checkpoint", "merge"))
+
+    def test_workspace_failure_preserves_task_for_reapproval(self):
+        class Broken(self.FakeWorkspaces):
+            def prepare(self, tid, recorded=None): raise WorkspaceError("not a git checkout")
+        self.add(1, approved=True, needs="file-changes")
+        self.worker(allow_file_changes=True, workspaces=Broken(self.root)).process_once()
+        t = self.get(1)
+        self.assertEqual((t["status"], t["approved"]), ("pending", False))
+        self.assertIn("workspace setup failed", t["last_error"])
 
     def test_commands_skipped_without_flag(self):
         self.add(1, approved=True, needs="commands")
