@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "enabled": true,
+  "trusted_sources": ["mcp"],
+  "auto_approve_needs": ["read-only", "file-changes"],
+  "pause_file": "PAUSE"
+}

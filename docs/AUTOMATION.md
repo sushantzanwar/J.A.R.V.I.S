@@ -37,6 +37,19 @@ How it is used, and its limits:
 
 ## 3. Autonomous worker (`python -m jarvis.worker`)
 
+### 3.0 Codex autonomy policy
+
+`bridge/autonomy_policy.json` is the version-controlled policy used when the
+local Codex MCP bridge receives a task.  Its default policy auto-approves only
+tasks with `source: "mcp"` and `needs: "read-only"` or `"file-changes"`.
+`commands` tasks are never auto-approved.  Invalid policy files fail closed.
+The existing `bridge/PAUSE` file stops both automatic approvals and worker
+execution immediately.
+
+After changing bridge Python code, restart the JARVIS MCP server in Codex
+Settings before using the new behavior; an already-running stdio server does
+not hot-reload source files.
+
 ### What happens automatically
 
 Once the scheduled task is installed (section 3.5), Windows runs one worker pass at logon and every 10 minutes
@@ -116,6 +129,13 @@ Get-Content logs\worker.jsonl -Tail 20
 Get-Content logs\worker.jsonl -Wait -Tail 5                         # follow live
 Get-Content logs\scheduler-audit.jsonl
 ```
+
+The scheduler enables `--allow-file-changes --allow-commands`, but command
+tasks still require explicit human approval and must match
+`bridge/command_allowlist.json`.  The default allowlist covers local unit
+tests, compile checks, bridge smoke tests, and read-only Git inspection; it
+rejects network, installation, deletion, scheduling, approval, secret access,
+and shell chaining.
 
 ### 3.6 Verified
 

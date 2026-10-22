@@ -436,6 +436,22 @@ class IdempotencyTests(unittest.TestCase):
             finally:
                 mcp_server.bridge.TASKS = old
 
+    def test_mcp_trusted_safe_tier_is_auto_approved_but_commands_is_not(self):
+        import sys
+        sys.path.insert(0, str(Path(worker_mod.__file__).resolve().parents[2] / "bridge"))
+        import mcp_server
+        with tempfile.TemporaryDirectory() as d:
+            old = mcp_server.bridge.TASKS
+            mcp_server.bridge.TASKS = Path(d)
+            try:
+                safe = mcp_server.call("submit_task", {"title": "safe", "body": "b", "needs": "read-only"})
+                command = mcp_server.call("submit_task", {"title": "command", "body": "b", "needs": "commands"})
+                self.assertTrue(safe["approved"])
+                self.assertEqual(safe.get("approval_origin"), "autonomy-policy-v1")
+                self.assertFalse(command["approved"])
+            finally:
+                mcp_server.bridge.TASKS = old
+
 
 if __name__ == "__main__":
     unittest.main()

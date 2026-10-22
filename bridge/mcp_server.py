@@ -11,6 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import bridge  # noqa: E402  (existing task store, reused unchanged)
+import autonomy  # noqa: E402
 
 if os.environ.get("BRIDGE_TASKS_DIR"):
     bridge.TASKS = Path(os.environ["BRIDGE_TASKS_DIR"])
@@ -43,9 +44,12 @@ TOOLS = [
 
 
 def view(t):
-    return {"id": t["id"], "title": t["title"], "status": t["status"],
-            "approved": t.get("approved", False), "needs": t.get("needs", "read-only"),
-            "updated": t["updated"], "notes": [n["text"] for n in t["notes"][-5:]]}
+    out = {"id": t["id"], "title": t["title"], "status": t["status"],
+           "approved": t.get("approved", False), "needs": t.get("needs", "read-only"),
+           "updated": t["updated"], "notes": [n["text"] for n in t["notes"][-5:]]}
+    if t.get("approval_origin"):
+        out["approval_origin"] = t["approval_origin"]
+    return out
 
 
 def call(name, a):
@@ -61,12 +65,18 @@ def call(name, a):
             return {**view(dup), "duplicate": True, "message": "Identical task already queued; no new task created."}
         if sum(1 for t in tasks if t["status"] != "done") >= MAX_OPEN:
             raise ValueError("too many open tasks; ask the human to clear the queue")
+        auto_approved = autonomy.permits("mcp", needs, bridge.TASKS)
         t = {"id": max([x["id"] for x in tasks], default=0) + 1, "title": bridge.redact(title),
              "body": bridge.redact(body), "status": "pending", "created": bridge.now(),
-             "updated": bridge.now(), "notes": [], "approved": False, "needs": needs,
+             "updated": bridge.now(), "notes": [], "approved": auto_approved, "needs": needs,
              "source": "mcp", "idem_key": key}
+        if auto_approved:
+            t["approval_origin"] = "autonomy-policy-v1"
+            t["notes"].append({"at": bridge.now(), "text": "auto-approved by autonomy policy"})
         bridge.save(t)
-        return {**view(t), "message": "Queued. Waiting for local human approval (python bridge\\admin.py approve %d)." % t["id"]}
+        message = "Queued and auto-approved by autonomy policy." if auto_approved else \
+            "Queued. Waiting for local human approval (python bridge\\admin.py approve %d)." % t["id"]
+        return {**view(t), "message": message}
     if name == "list_tasks":
         return [view(t) for t in bridge.all_tasks()]
     if name in ("get_task_status", "get_task_result"):

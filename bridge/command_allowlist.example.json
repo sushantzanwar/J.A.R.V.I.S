@@ -2,6 +2,7 @@
   "_comment": "Copy to command_allowlist.json to let the worker run approved 'commands' tasks (and start it with --allow-commands). Only these Claude Code rules may run; everything else is denied. Rules that approve tasks, touch the scheduler, use the network, install or delete things, or chain commands are rejected at load time.",
   "allow": [
     "Bash(.venv/Scripts/python.exe -m unittest *)",
+    "Bash(.venv/Scripts/python.exe -m compileall *)",
     "Bash(.venv/Scripts/python.exe -I bridge/smoke_test.py)",
     "Bash(python -I bridge/smoke_test.py)",
     "Bash(python bridge/bridge.py list)",

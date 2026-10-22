@@ -32,7 +32,14 @@ permission tiers) are documented, with limits, in [docs/AUTOMATION.md](docs/AUTO
 
 **Stage 3: autonomous worker.** The worker can run unattended from Windows Task Scheduler
 (`scripts/jarvis-scheduler.ps1`), with OS-level locks, crash recovery, bounded retries, structured logs in
-`logs/worker.jsonl`, and an allowlist-only `commands` tier that is never scheduled. See docs/AUTOMATION.md section 3.
+`logs/worker.jsonl`, and an allowlist-only `commands` tier. Commands tasks are
+scheduled only after explicit human approval and only when they match the
+project command allowlist. See docs/AUTOMATION.md section 3.
+
+The versioned `bridge/autonomy_policy.json` auto-approves trusted local MCP
+read-only and file-change tasks by default. Commands-tier tasks remain
+human-approved and allowlist-only. Restart the local JARVIS MCP server in
+Codex Settings after updating bridge code; stdio MCP processes do not hot-reload.
 
 **Task 9: local-first workspace and release tooling.** Persistent chat history, preferences and an activity
 timeline (local SQLite, outside the repo, with corruption and migration recovery), a settings and diagnostics

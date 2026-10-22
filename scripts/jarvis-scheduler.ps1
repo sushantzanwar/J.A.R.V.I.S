@@ -8,7 +8,8 @@
     - when:      at logon, and every -IntervalMinutes while logged on (missed runs start when available)
     - as:        current user, interactive logon (no stored password), RunLevel Limited (never elevated)
     - limits:    one instance at a time (IgnoreNew), each run stopped after 1 hour
-  It never passes --allow-commands, never approves tasks and opens no network port.
+  It enables commands-tier tasks only when they are human-approved and match the local command allowlist.
+  It never auto-approves tasks or opens a network port.
   Install requires the explicit authorization phrase. Existing task definitions are exported to
   .jarvis\backups before they are replaced or removed, and every change is appended to logs\scheduler-audit.jsonl.
 
@@ -30,7 +31,7 @@ $ErrorActionPreference = 'Stop'
 $TaskName   = 'JarvisWorker'
 $Root       = Split-Path -Parent $PSScriptRoot
 $Python     = Join-Path $Root '.venv\Scripts\pythonw.exe'
-$WorkerArgs = '-m jarvis.worker --allow-file-changes'
+$WorkerArgs = '-m jarvis.worker --allow-file-changes --allow-commands'
 $User       = "$env:USERDOMAIN\$env:USERNAME"
 $BackupDir  = Join-Path $Root '.jarvis\backups'
 $AuditLog   = Join-Path $Root 'logs\scheduler-audit.jsonl'
@@ -63,7 +64,7 @@ function Show-Plan {
     Write-Host "  Triggers:  at logon of $User; then every $IntervalMinutes min while logged on"
     Write-Host "  Account:   $User, interactive logon (no password stored), RunLevel Limited (not elevated)"
     Write-Host "  Limits:    one instance at a time; stopped after 1 hour; missed runs start when available"
-    Write-Host "  Never:     --allow-commands, task approval, network listeners"
+    Write-Host "  Never:     task approval, unrestricted commands, network listeners"
 }
 
 function Show-Status {
@@ -105,7 +106,7 @@ switch ($Action) {
             -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
         Register-ScheduledTask -TaskName $TaskName -Action $act -Trigger @($atLogon, $repeat) -Principal $principal `
             -Settings $settings -Force `
-            -Description 'Jarvis: runs human-approved read-only and file-changes bridge tasks. Never approves tasks or runs commands-tier tasks.' | Out-Null
+            -Description 'Jarvis: auto-runs policy-approved read/file tasks and human-approved allowlisted commands tasks. Never auto-approves commands.' | Out-Null
         Write-Audit 'install' @{ interval_minutes = $IntervalMinutes; command = "$Python $WorkerArgs"; backup = "$backup" }
         Write-Host "`nRegistered. Previous definition backed up to: $(if ($backup) { $backup } else { '(none existed)' })"
         Show-Status
@@ -115,7 +116,6 @@ switch ($Action) {
         $t = Get-JarvisTask
         if (-not $t) { throw 'Not registered.' }
         $problems = @()
-        if ($t.Actions[0].Arguments -match 'allow-commands') { $problems += 'action passes --allow-commands' }
         if ($t.Principal.RunLevel -ne 'Limited') { $problems += 'task would run elevated' }
         if ($t.Principal.LogonType -ne 'Interactive') { $problems += 'unexpected logon type' }
         if ($t.State -eq 'Disabled') { $problems += 'task is disabled' }
