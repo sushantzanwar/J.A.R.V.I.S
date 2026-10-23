@@ -7,6 +7,8 @@ Elsewhere this falls back to subprocess.run.
 """
 import subprocess
 import sys
+import os
+from pathlib import Path
 from types import SimpleNamespace
 
 if sys.platform == "win32":
@@ -61,12 +63,18 @@ if sys.platform == "win32":
 def run_contained(argv, *, input=None, timeout=None, cwd=None, env=None, stdin=None, **_ignored):
     """subprocess.run(capture_output=True, text=True) with containment. Raises subprocess.TimeoutExpired
     after killing the whole child tree. The result has .returncode, .stdout, .stderr and .contained."""
+    child_env = dict(os.environ if env is None else env)
+    # The parent explicitly uses UTF-8 pipes. Make a Python child use the same
+    # codec on Windows, where its inherited ANSI code page can otherwise turn
+    # valid UTF-8 task input into replacement characters.
+    if argv and Path(str(argv[0])).name.lower().startswith("python"):
+        child_env.setdefault("PYTHONIOENCODING", "utf-8")
     if sys.platform != "win32":
-        return subprocess.run(argv, input=input, timeout=timeout, cwd=cwd, env=env, stdin=stdin,
+        return subprocess.run(argv, input=input, timeout=timeout, cwd=cwd, env=child_env, stdin=stdin,
                               capture_output=True, text=True, encoding="utf-8", errors="replace")
     job = _new_job()
     p = subprocess.Popen(argv, stdin=subprocess.PIPE if input is not None else (stdin or subprocess.DEVNULL),
-                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd, env=env, text=True,
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd, env=child_env, text=True,
                          encoding="utf-8", errors="replace", creationflags=subprocess.CREATE_NO_WINDOW)
     contained = bool(job) and bool(_k32.AssignProcessToJobObject(job, int(p._handle)))
     try:
