@@ -60,6 +60,15 @@ if sys.platform == "win32":
         return job
 
 
+def run_quiet(argv, **kwargs):
+    """subprocess.run that never opens a console window on Windows. Use it for any child started by a
+    windowless process (the scheduled worker runs under pythonw.exe): without the flag, Windows gives every
+    console program such a parent a brand-new visible console. Same arguments and result as subprocess.run."""
+    if sys.platform == "win32":
+        kwargs["creationflags"] = kwargs.get("creationflags", 0) | subprocess.CREATE_NO_WINDOW
+    return subprocess.run(argv, **kwargs)
+
+
 def run_contained(argv, *, input=None, timeout=None, cwd=None, env=None, stdin=None, **_ignored):
     """subprocess.run(capture_output=True, text=True) with containment. Raises subprocess.TimeoutExpired
     after killing the whole child tree. The result has .returncode, .stdout, .stderr and .contained."""

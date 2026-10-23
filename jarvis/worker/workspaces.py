@@ -9,6 +9,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from jarvis.integrations.process import run_quiet
+
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "bridge"))
 import tasklock  # noqa: E402
@@ -26,7 +28,7 @@ class Workspace:
 
 
 class WorkspaceManager:
-    def __init__(self, root: Path = ROOT, runner=subprocess.run):
+    def __init__(self, root: Path = ROOT, runner=run_quiet):  # run_quiet: no console window under the scheduler
         self.root = Path(root).resolve()
         self.base = self.root / ".jarvis" / "workspaces"
         self._run = runner
