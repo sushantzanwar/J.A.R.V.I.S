@@ -6,6 +6,7 @@ Provides 100% offline, zero-budget, local voice recognition with:
 Zero external Python packages required. Uses the contained quiet runner.
 """
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -21,8 +22,15 @@ COMMAND_PHRASES = [
     "who are you", "what time is it", "show tasks", "help", "status"
 ]
 
+# The WAV path arrives in an environment variable. It cannot be a -Command parameter:
+# powershell.exe -Command appends any trailing arguments to the command text instead of
+# binding them, so a param() block never receives them and the path was always empty.
 PS_RECOGNIZE_SCRIPT = r"""
-param([string]$wavPath)
+$wavPath = $env:JARVIS_WAV_PATH
+if ([string]::IsNullOrEmpty($wavPath) -or -not (Test-Path -LiteralPath $wavPath)) {
+    Write-Output '{"text":"","confidence":0.0}'
+    exit 0
+}
 try {
     Add-Type -AssemblyName System.Speech
     $engine = New-Object System.Speech.Recognition.SpeechRecognitionEngine
@@ -91,11 +99,13 @@ class SpeechRecognizer:
             "-NonInteractive",
             "-ExecutionPolicy", "Bypass",
             "-Command", PS_RECOGNIZE_SCRIPT,
-            "-wavPath", str(wav)
         ]
+        # Full environment plus the path: run_contained replaces the child environment
+        # with whatever is passed, and powershell.exe needs PATH and SystemRoot.
+        env = {**os.environ, "JARVIS_WAV_PATH": str(wav)}
 
         try:
-            res = self._runner(argv, timeout=timeout)
+            res = self._runner(argv, timeout=timeout, env=env)
             if res.returncode != 0:
                 return "", 0.0
             # Scan lines in stdout from the bottom for the JSON output

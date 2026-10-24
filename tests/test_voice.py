@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from jarvis.integrations.audio_recorder import AudioRecorder
-from jarvis.integrations.speech_recognizer import SpeechRecognizer
+from jarvis.integrations.speech_recognizer import PS_RECOGNIZE_SCRIPT, SpeechRecognizer
 from jarvis.ui.backend import Backend
 from tests.qt_helpers import gui_app, pump
 
@@ -94,6 +94,32 @@ class SpeechRecognizerUnitTests(unittest.TestCase):
                 text, conf = rec.transcribe_wav(wav_path)
                 self.assertEqual(text, "")
                 self.assertEqual(conf, 0.0)
+
+    def test_wav_path_travels_in_the_environment(self):
+        """powershell.exe -Command appends trailing arguments instead of binding them, so a
+        -wavPath parameter never reached the script and every transcription came back empty."""
+        captured = {}
+
+        def runner(argv, **kw):
+            captured["argv"], captured["env"] = argv, kw.get("env")
+            return SimpleNamespace(returncode=0, stdout='{"text":"status","confidence":0.9}', stderr="")
+
+        rec = SpeechRecognizer(runner=runner)
+        with tempfile.TemporaryDirectory() as td:
+            wav_path = Path(td) / "dummy.wav"
+            wav_path.write_bytes(b"x" * 200)
+            with mock.patch.object(SpeechRecognizer, "is_available", return_value=True):
+                text, conf = rec.transcribe_wav(wav_path)
+
+        self.assertEqual((text, conf), ("status", 0.9))
+        self.assertNotIn("-wavPath", captured["argv"])
+        self.assertEqual(captured["env"]["JARVIS_WAV_PATH"], str(wav_path.resolve()))
+        # The child needs a usable environment, not just the one variable.
+        self.assertIn("PATH", {k.upper() for k in captured["env"]})
+
+    def test_script_reads_the_path_from_the_environment(self):
+        self.assertIn("$env:JARVIS_WAV_PATH", PS_RECOGNIZE_SCRIPT)
+        self.assertNotIn("param(", PS_RECOGNIZE_SCRIPT)
 
 
 class VoiceBackendTests(unittest.TestCase):
