@@ -194,6 +194,81 @@ Popup {
                     }
                 }
 
+                // ---- durable memory
+                Heading { text: "DURABLE MEMORY (LOCAL SQLITE)" }
+                Body {
+                    text: (backend && backend.memories ? backend.memories.length : 0) + " structured memory record(s) stored."
+                }
+                Note {
+                    text: {
+                        if (!backend || !backend.memories || backend.memories.length === 0)
+                            return "No memories stored yet. Jarvis stores facts locally and offline.";
+                        var counts = {};
+                        for (var i = 0; i < backend.memories.length; i++) {
+                            var c = backend.memories[i].category;
+                            counts[c] = (counts[c] || 0) + 1;
+                        }
+                        var parts = [];
+                        for (var k in counts) parts.push(k + ": " + counts[k]);
+                        return "By category: " + parts.join(" · ") + ". Export or manage below.";
+                    }
+                }
+                RowLayout {
+                    spacing: 8
+                    GhostButton {
+                        objectName: "exportMemoriesButton"
+                        text: "EXPORT (JSON)"
+                        onClicked: if (backend) backend.exportMemories()
+                    }
+                    GhostButton {
+                        id: clearMemBtn
+                        objectName: "clearMemoriesButton"
+                        property bool armed: false
+                        text: armed ? "CONFIRM CLEAR (BACKUP CREATED)" : "CLEAR ALL MEMORIES…"
+                        danger: true
+                        onClicked: {
+                            if (!armed) {
+                                armed = true;
+                            } else {
+                                armed = false;
+                                if (backend) backend.clearMemories("");
+                            }
+                        }
+                    }
+                    GhostButton {
+                        visible: clearMemBtn.armed
+                        text: "CANCEL"
+                        compact: true
+                        onClicked: clearMemBtn.armed = false
+                    }
+                }
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 4
+                    visible: Boolean(backend && backend.memories && backend.memories.length > 0)
+                    Repeater {
+                        model: backend && backend.memories ? backend.memories.slice(0, 5) : []
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 6
+                            Text {
+                                text: "[" + modelData.category + "] " + modelData.key + ": " + modelData.value
+                                color: Theme.text
+                                font.family: Theme.mono
+                                font.pixelSize: 11
+                                elide: Text.ElideRight
+                                Layout.fillWidth: true
+                            }
+                            GhostButton {
+                                text: "FORGET"
+                                compact: true
+                                danger: true
+                                onClicked: if (backend) backend.forget(modelData.key, modelData.category)
+                            }
+                        }
+                    }
+                }
+
                 // ---- worker (read only)
                 Heading { text: "BACKGROUND WORKER (READ-ONLY)" }
                 Body {

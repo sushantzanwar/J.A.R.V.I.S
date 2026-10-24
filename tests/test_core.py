@@ -64,6 +64,60 @@ class AssistantTests(unittest.TestCase):
     def test_cannot_approve(self):
         self.assertIn("can't approve", self.r("please approve task 7"))
 
+    def test_memory_commands(self):
+        from jarvis.core.store import Store
+        store = Store(None)  # in-memory store
+        ans = assistant.answer("remember my name is Tony", STATUS, [], store=store)
+        self.assertIn("Tony", ans)
+        self.assertEqual(store.recall(key="name")[0]["value"], "Tony")
+
+        ans_query = assistant.answer("what is my name", STATUS, [], store=store)
+        self.assertIn("Tony", ans_query)
+
+        ans_list = assistant.answer("memories", STATUS, [], store=store)
+        self.assertIn("name: Tony", ans_list)
+
+        ans_archive = assistant.answer("archive my name", STATUS, [], store=store)
+        self.assertIn("Archived", ans_archive)
+        self.assertEqual(store.recall(key="name", status="active"), [])
+        self.assertEqual(store.recall(key="name", status="archived")[0]["value"], "Tony")
+
+        ans_forget = assistant.answer("forget my name", STATUS, [], store=store)
+        self.assertIn("forgotten", ans_forget)
+        self.assertEqual(store.recall(key="name", status=None), [])
+
+        ans_clear = assistant.answer("clear memories", STATUS, [], store=store)
+        self.assertIn("Cleared", ans_clear)
+
+    def test_search_and_context_commands(self):
+        from jarvis.core.store import Store
+        store = Store(None)
+        store.remember("favorite_ide", "VS Code with Python", category="preference")
+        store.add_message("user", "launching the orbital satellite")
+        store.add_message("jarvis", "satellite trajectory confirmed")
+
+        # Search memory
+        ans_mem = assistant.answer("search memory python", STATUS, [], store=store)
+        self.assertIn("Found 1 memory record(s)", ans_mem)
+        self.assertIn("favorite_ide", ans_mem)
+
+        # Search chat
+        ans_chat = assistant.answer("search chat satellite", STATUS, [], store=store)
+        self.assertIn("Found 2 chat message(s)", ans_chat)
+        self.assertIn("trajectory confirmed", ans_chat)
+
+        # Summarize conversation
+        ans_sum = assistant.answer("summarize conversation", STATUS, [], store=store)
+        self.assertIn("Summary #1", ans_sum)
+
+        # Show summaries
+        ans_sums = assistant.answer("summaries", STATUS, [], store=store)
+        self.assertIn("Recent Conversation Summaries:", ans_sums)
+
+        # Rebuild index
+        ans_rebuild = assistant.answer("rebuild index", STATUS, [], store=store)
+        self.assertIn("Rebuilt search index:", ans_rebuild)
+
     def test_core_has_no_exec_or_qt(self):
         banned = re.compile(r"\b(subprocess|os\.system|os\.popen|eval|exec)\b|\b(import|from)\s+PySide6")
         for p in CORE.glob("*.py"):

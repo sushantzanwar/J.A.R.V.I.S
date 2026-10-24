@@ -17,7 +17,8 @@ def build(info: dict) -> str:
         f"  location:   {s['location']}",
         f"  persistent: {'yes' if s['persistent'] else 'NO (this session is not being saved)'}",
         f"  integrity:  {s['integrity']}   size: {s['size_kb']:.0f} KB",
-        f"  messages: {s['messages']}   activity notes: {s['activity']}",
+        f"  messages: {s['messages']}   activity notes: {s['activity']}   memories: {s.get('memories', 0)}   summaries: {s.get('conversation_summaries', 0)}",
+        f"  search index (FTS5): {s.get('memories_fts', 0)} memories, {s.get('messages_fts', 0)} messages | retention cap: {s.get('max_messages_retention', 1000)} | last latency: {s.get('last_search_latency_ms', 0.0)}ms",
     ]
     if s["notice"]:
         lines.append(f"  notice:     {s['notice']}")
