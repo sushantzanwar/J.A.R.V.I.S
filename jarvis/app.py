@@ -12,6 +12,8 @@ from jarvis.core.providers import ModelProvider
 from jarvis.core.store import Store
 from jarvis.integrations.hotkey import GlobalHotkey
 from jarvis.integrations.registry import make_provider
+from jarvis.integrations.speech_recognizer import SpeechRecognizer
+from jarvis.integrations.whisper_cpp import CascadingRecognizer, WhisperCppRecognizer
 from jarvis.ui.backend import Backend
 
 QML_DIR = Path(__file__).resolve().parent / "ui" / "qml"
@@ -44,7 +46,10 @@ def main(argv: list[str] | None = None) -> int:
     app = QGuiApplication(argv if argv is not None else sys.argv)
     app.setApplicationName("Jarvis")
     store = Store.open_default()
-    engine, backend = build(store=store, hotkey_factory=GlobalHotkey)
+    # whisper.cpp when its binary and model are present, Windows SAPI otherwise.
+    recognizer = CascadingRecognizer(WhisperCppRecognizer(), SpeechRecognizer())
+    engine, backend = build(store=store, hotkey_factory=GlobalHotkey,
+                            speech_recognizer=recognizer)
     if not engine.rootObjects():
         print("Jarvis: failed to load the interface (see QML errors above).", file=sys.stderr)
         return 1

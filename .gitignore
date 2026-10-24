@@ -62,6 +62,10 @@ bridge/command_allowlist.json
 *.db.bak-*
 *.db.corrupt-*
 
+# Speech models and native binaries: large, downloaded, never in git
+models/
+tools/
+
 # Local agent / assistant state (shared Claude Code skills are tracked on purpose)
 .claude/*
 !.claude/skills/
