@@ -12,17 +12,25 @@ from PySide6.QtGui import QGuiApplication
 
 from jarvis import __version__
 from jarvis.core import assistant, diagnostics
+from jarvis.core.context import ContextManager
 from jarvis.core.providers import CONNECTED, ERROR, PROVIDER_NAMES, ModelProvider, OfflineProvider, ProviderError
 from jarvis.core.store import Store, now_iso
 from jarvis.core.system_status import SystemMonitor
 from jarvis.core.tasks import DEFAULT_TASKS_DIR, awaiting_approval, counts, read_tasks
 from jarvis.core.worker_state import worker_state
+from jarvis.integrations.audio_recorder import AudioRecorder
 from jarvis.integrations.registry import make_provider
+from jarvis.integrations.speech_recognizer import SpeechRecognizer
+from jarvis.integrations.system_control import SystemControl
 
 MAX_INPUT = 500
 GREETING = "Jarvis online. Type 'help' to see what I can do."
 KIND_TEXT = {"app_started": "Jarvis started", "history_cleared": "Conversation history cleared",
-             "prefs_reset": "Preferences reset to defaults"}
+             "prefs_reset": "Preferences reset to defaults", "tool_executed": "System tool action",
+             "memory_saved": "Memory saved", "memory_updated": "Memory updated",
+             "memory_archived": "Memory archived", "memory_forgotten": "Memory forgotten",
+             "memories_cleared": "Memories cleared", "fts_rebuilt": "Search index rebuilt",
+             "summary_created": "Conversation summary"}
 
 
 def fmt_time(ts: str) -> str:
@@ -43,11 +51,16 @@ class Backend(QObject):
     storeChanged = Signal()
     timelineChanged = Signal()
     workerChanged = Signal()
+    voiceRecordingChanged = Signal()
+    voiceLevelChanged = Signal()
+    memoriesChanged = Signal()
     _answerReady = Signal(str)                # emitted from a worker thread, delivered on the UI thread
     _providerChecked = Signal(str, str, str)  # provider name, state, detail
+    _voiceTranscriptionReady = Signal(str, float)  # transcribed text, confidence
 
     def __init__(self, tasks_dir: Path = DEFAULT_TASKS_DIR, provider: ModelProvider | None = None, parent=None,
-                 *, store: Store | None = None, factory=make_provider):
+                 *, store: Store | None = None, factory=make_provider, system_control: SystemControl | None = None,
+                 audio_recorder: AudioRecorder | None = None, speech_recognizer: SpeechRecognizer | None = None):
         super().__init__(parent)
         self._closing = False   # set by shutdown(): late results from worker threads are dropped
         self._tasks_dir = Path(tasks_dir)
@@ -56,6 +69,11 @@ class Backend(QObject):
         self._store = store or Store(None)  # no persistence unless a real store is passed in
         self._factory = factory
         self._provider = provider or OfflineProvider()
+        self._system_control = system_control or SystemControl()
+        self._recorder = audio_recorder or AudioRecorder()
+        self._recognizer = speech_recognizer or SpeechRecognizer()
+        self._voice_recording = False
+        self._voice_level = 0.0
         self._monitor = SystemMonitor()
         self._status = self._monitor.snapshot()
         self._tasks = read_tasks(self._tasks_dir)
@@ -72,6 +90,7 @@ class Backend(QObject):
 
         self._answerReady.connect(self._deliver)
         self._providerChecked.connect(self._set_provider)
+        self._voiceTranscriptionReady.connect(self._on_voice_transcribed)
         self._pstate, self._pdetail = "checking", "checking provider…"
         self._record("app_started")
         self.refreshProvider()
@@ -81,6 +100,8 @@ class Backend(QObject):
         self._tasks_timer = QTimer(self, interval=3000)
         self._tasks_timer.timeout.connect(self.refreshTasks)
         self._tasks_timer.timeout.connect(self.refreshWorker)
+        self._voice_level_timer = QTimer(self, interval=80)
+        self._voice_level_timer.timeout.connect(self._update_voice_level)
         QTimer.singleShot(400, self.refreshStatus)  # CPU load needs a second sample for a baseline
         self._status_timer.start()
         self._tasks_timer.start()
@@ -91,6 +112,10 @@ class Backend(QObject):
         self._closing = True
         self._status_timer.stop()
         self._tasks_timer.stop()
+        self._voice_level_timer.stop()
+        if self._voice_recording:
+            self._recorder.stop()
+            self._voice_recording = False
 
     def _emit_from_thread(self, signal, *args) -> None:
         if not self._closing:
@@ -211,6 +236,18 @@ class Backend(QObject):
     def workerState(self):
         return self._worker
 
+    @Property(bool, notify=voiceRecordingChanged)
+    def voiceRecording(self):
+        return self._voice_recording
+
+    @Property(float, notify=voiceLevelChanged)
+    def voiceLevel(self):
+        return self._voice_level
+
+    @Property("QVariantList", notify=memoriesChanged)
+    def memories(self):
+        return self._store.recall()
+
     # ---- internal state changes
     def _set_orb(self, mode: str):
         if mode != self._orb:
@@ -323,7 +360,7 @@ class Backend(QObject):
             "provider": {"name": self._provider.name, "state": self._pstate, "detail": self._pdetail},
             "store": {"location": str(st.path) if st.path else "(memory)", "persistent": st.persistent,
                       "integrity": st.integrity(), "size_kb": st.size_bytes() / 1024, "messages": c["messages"],
-                      "activity": c["activity"], "notice": st.notice or self._notice},
+                      "activity": c["activity"], "memories": c.get("memories", 0), "notice": st.notice or self._notice},
             "worker": self._worker, "tasks": counts(self._tasks),
         }
 
@@ -337,6 +374,95 @@ class Backend(QObject):
         if clipboard:
             clipboard.setText(self.diagnosticsText())
 
+    # ---- memories (explicit user control)
+    @Slot(str, str, str)
+    def remember(self, key: str, value: str, category: str = "general"):
+        res = self._store.remember(key, value, category=category)
+        self.memoriesChanged.emit()
+        return res
+
+    @Slot(str, str)
+    def forget(self, key: str, category: str = ""):
+        res = self._store.forget(key, category=category or None)
+        self.memoriesChanged.emit()
+        return res
+
+    @Slot(str, str)
+    def archiveMemory(self, key: str, category: str = ""):
+        res = self._store.archive(key, category=category or None)
+        self.memoriesChanged.emit()
+        return res
+
+    @Slot(str)
+    def clearMemories(self, category: str = ""):
+        res = self._store.clear_memories(category=category or None, backup=True)
+        self.memoriesChanged.emit()
+        return res
+
+    @Slot(result=str)
+    def exportMemories(self) -> str:
+        data = self._store.export_memories()
+        clipboard = QGuiApplication.clipboard() if QGuiApplication.instance() else None
+        if clipboard:
+            clipboard.setText(data)
+        return data
+
+    @Slot(str, result="QVariantList")
+    def searchMemories(self, query: str) -> list:
+        return self._store.search_memories(query)
+
+    @Slot(str, result="QVariantList")
+    def searchMessages(self, query: str) -> list:
+        return self._store.search_messages(query)
+
+    @Slot(result="QVariantList")
+    def summaries(self) -> list:
+        return self._store.summaries()
+
+    @Slot(result=str)
+    def rebuildFts(self) -> str:
+        res = self._store.rebuild_fts()
+        return f"Rebuilt FTS: {res.get('memories_indexed', 0)} memories, {res.get('messages_indexed', 0)} messages"
+
+    @Slot(result=str)
+    def summarizeConversation(self) -> str:
+        sumry = ContextManager.summarize_conversation(self._store)
+        if sumry:
+            self._record("summary_created", sumry["summary"])
+            return sumry["summary"]
+        return "No conversation history to summarize."
+
+    @Slot(str, result="QVariantMap")
+    def formatContext(self, query: str) -> dict:
+        return ContextManager.format_context(self._store, query)
+
+    @Slot(int, result=bool)
+    def deleteSummary(self, summary_id: int) -> bool:
+        res = self._store.delete_summary(summary_id)
+        if res:
+            self._record("summary_deleted", f"Deleted summary #{summary_id}")
+        return res
+
+    @Slot(result="QVariantMap")
+    def ftsStats(self) -> dict:
+        counts = self._store.counts()
+        return {
+            "memories_fts": counts.get("memories_fts", 0),
+            "messages_fts": counts.get("messages_fts", 0),
+            "last_rebuild_ts": counts.get("last_rebuild_ts") or "never",
+            "last_search_latency_ms": counts.get("last_search_latency_ms", 0.0),
+            "max_messages_retention": counts.get("max_messages_retention", 1000),
+        }
+
+    @Slot(result="QVariantMap")
+    def memoryCountsByCategory(self) -> dict:
+        mems = self._store.recall(status="active", limit=5000)
+        c = {}
+        for m in mems:
+            cat = m["category"]
+            c[cat] = c.get(cat, 0) + 1
+        return c
+
     # ---- chat
     @Slot(str)
     def send(self, text: str):
@@ -347,8 +473,11 @@ class Backend(QObject):
         if self._busy:
             self._append("jarvis", "Still working on your previous question.", persist=False)
             return
-        builtin = assistant.answer(text, self._status, self._tasks)
+        builtin = assistant.answer(text, self._status, self._tasks, system_control=self._system_control, store=self._store)
         if builtin is not None:
+            if any(k in builtin for k in ("Volume", "Media", "Opened", "Workstation", "uptime:", "Battery", "Active window", "Skipped", "Returned", "remember", "memory", "forgotten", "Cleared", "Rebuilt", "Summary", "search")):
+                self._record("tool_executed", builtin)
+                self.memoriesChanged.emit()
             self._start(lambda: builtin, delay=450)
         elif self._pstate == CONNECTED:
             self._start(lambda: self._ask_model(text), delay=0)
@@ -391,3 +520,76 @@ class Backend(QObject):
         self._append("jarvis", answer)
         self._set_orb("speaking")
         QTimer.singleShot(1600, lambda: self._set_orb("idle"))
+
+    # ---- voice (Push-to-Talk)
+    def _update_voice_level(self):
+        if self._voice_recording:
+            level = self._recorder.current_level
+            if abs(level - self._voice_level) > 0.01:
+                self._voice_level = level
+                self.voiceLevelChanged.emit()
+
+    @Slot()
+    def startVoiceRecording(self):
+        if self._busy or self._voice_recording:
+            return
+        if not self._recorder.start():
+            return
+        self._voice_recording = True
+        self.voiceRecordingChanged.emit()
+        self._set_orb("listening")
+        self._voice_level_timer.start()
+
+    @Slot()
+    def stopVoiceRecording(self):
+        if not self._voice_recording:
+            return
+        self._voice_recording = False
+        self._voice_level_timer.stop()
+        self._voice_level = 0.0
+        self.voiceLevelChanged.emit()
+        self.voiceRecordingChanged.emit()
+        self._set_orb("thinking")
+
+        recorder = self._recorder
+        recognizer = self._recognizer
+
+        def transcribe_task():
+            import tempfile
+            pcm = recorder.stop()
+            if not pcm or len(pcm) < 3200:  # < 100ms of audio
+                self._emit_from_thread(self._voiceTranscriptionReady, "", 0.0)
+                return
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tf:
+                tmp_path = Path(tf.name)
+            try:
+                recorder.save_wav(tmp_path, pcm)
+                text, conf = recognizer.transcribe_wav(tmp_path)
+            finally:
+                if tmp_path.is_file():
+                    try:
+                        tmp_path.unlink()
+                    except Exception:
+                        pass
+            self._emit_from_thread(self._voiceTranscriptionReady, text, conf)
+
+        threading.Thread(target=transcribe_task, daemon=True).start()
+
+    @Slot()
+    def toggleVoiceRecording(self):
+        if self._voice_recording:
+            self.stopVoiceRecording()
+        else:
+            self.startVoiceRecording()
+
+    @Slot(str, float)
+    def _on_voice_transcribed(self, text: str, conf: float):
+        if self._closing:
+            return
+        if text:
+            self._record("tool_executed", f"Voice recognized: '{text}' (conf {conf:.2f})")
+            self.send(text)
+        else:
+            self._append("jarvis", "I didn't catch that. Please speak clearly or type your request.", persist=False)
+            self._set_orb("idle")
+
