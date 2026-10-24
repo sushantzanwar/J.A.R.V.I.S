@@ -97,7 +97,9 @@ class AudioRecorder:
             pass
 
         WAVEHDR._fields_ = [
-            ("lpData", ctypes.c_char_p),
+            # c_void_p, never c_char_p: reading a c_char_p field makes ctypes build a
+            # Python bytes object that stops at the first NUL, which PCM audio is full of.
+            ("lpData", ctypes.c_void_p),
             ("dwBufferLength", wintypes.DWORD),
             ("dwBytesRecorded", wintypes.DWORD),
             ("dwUser", ctypes.c_void_p),
@@ -141,7 +143,7 @@ class AudioRecorder:
 
         for b in buffers:
             hdr = WAVEHDR()
-            hdr.lpData = ctypes.cast(b, ctypes.c_char_p)
+            hdr.lpData = ctypes.cast(b, ctypes.c_void_p)
             hdr.dwBufferLength = buf_size
             hdr.dwFlags = 0
             winmm.waveInPrepareHeader(h_wave, ctypes.byref(hdr), ctypes.sizeof(hdr))
@@ -160,9 +162,9 @@ class AudioRecorder:
                 # Wait for any buffer to finish filling
                 kernel32.WaitForSingleObject(h_event, 50)
 
-                for hdr in headers:
+                for buf, hdr in zip(buffers, headers):
                     if hdr.dwFlags & WHDR_DONE:
-                        chunk = ctypes.string_at(hdr.lpData, hdr.dwBytesRecorded)
+                        chunk = self._read_chunk(buf, hdr.dwBytesRecorded)
                         if chunk:
                             with self._lock:
                                 self._recorded_bytes.extend(chunk)
@@ -177,9 +179,9 @@ class AudioRecorder:
             winmm.waveInReset(h_wave)
 
             # Drain any remaining bytes in flight
-            for hdr in headers:
+            for buf, hdr in zip(buffers, headers):
                 if hdr.dwBytesRecorded > 0:
-                    chunk = ctypes.string_at(hdr.lpData, hdr.dwBytesRecorded)
+                    chunk = self._read_chunk(buf, hdr.dwBytesRecorded)
                     if chunk:
                         with self._lock:
                             self._recorded_bytes.extend(chunk)
@@ -187,6 +189,18 @@ class AudioRecorder:
 
             winmm.waveInClose(h_wave)
             kernel32.CloseHandle(h_event)
+
+    @staticmethod
+    def _read_chunk(buffer, nbytes: int) -> bytes:
+        """Copy exactly nbytes of captured PCM out of a driver-filled ctypes buffer.
+
+        Reads the buffer object directly. The WAVEHDR pointer must never be used for this:
+        audio contains NUL bytes everywhere, and ctypes truncates a c_char_p read at the
+        first one, which silently yields heap memory instead of the recording.
+        """
+        if nbytes <= 0:
+            return b""
+        return buffer.raw[:nbytes]
 
     @staticmethod
     def compute_rms(pcm_data: bytes) -> float:

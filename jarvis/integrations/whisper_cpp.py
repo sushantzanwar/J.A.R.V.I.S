@@ -20,7 +20,23 @@ from jarvis.integrations.process import run_contained
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 DEFAULT_BINARY = ROOT / "tools" / "whisper" / "Release" / "whisper-cli.exe"
-DEFAULT_MODEL = ROOT / "models" / "ggml-base.en.bin"
+MODEL_DIR = ROOT / "models"
+
+# Tried in order. small.en is active: on a real-microphone recording it recognised a proper
+# noun that base.en missed, at ~4.8s for a 6s clip, which is acceptable for push-to-talk.
+PREFERRED_MODELS = ("ggml-small.en.bin", "ggml-base.en.bin")
+DEFAULT_MODEL = MODEL_DIR / PREFERRED_MODELS[0]
+
+
+def resolve_model() -> Path:
+    """First preferred model present on disk, so a missing small.en degrades to base.en
+    instead of failing. Returns the preferred name when none exist; is_available() then
+    reports False and the cascade falls back to SAPI."""
+    for name in PREFERRED_MODELS:
+        candidate = MODEL_DIR / name
+        if candidate.is_file():
+            return candidate
+    return DEFAULT_MODEL
 
 # JARVIS_WHISPER_BIN / JARVIS_WHISPER_MODEL override the defaults without code changes.
 ENV_BINARY = "JARVIS_WHISPER_BIN"
@@ -36,7 +52,7 @@ class WhisperCppRecognizer:
     def __init__(self, binary: Path | str | None = None, model: Path | str | None = None,
                  runner=run_contained, threads: int = 4):
         self.binary = Path(binary or os.environ.get(ENV_BINARY) or DEFAULT_BINARY)
-        self.model = Path(model or os.environ.get(ENV_MODEL) or DEFAULT_MODEL)
+        self.model = Path(model or os.environ.get(ENV_MODEL) or resolve_model())
         self._runner = runner
         self.threads = threads
 
@@ -44,7 +60,7 @@ class WhisperCppRecognizer:
         """Both the binary and the model must be present; neither ships in the repository."""
         return sys.platform == "win32" and self.binary.is_file() and self.model.is_file()
 
-    def transcribe_wav(self, wav_path: Path | str, timeout: float = 30.0) -> tuple[str, float]:
+    def transcribe_wav(self, wav_path: Path | str, timeout: float = 60.0) -> tuple[str, float]:
         wav = Path(wav_path).resolve()
         if not wav.is_file() or wav.stat().st_size < 100:
             return "", 0.0
@@ -91,7 +107,7 @@ class CascadingRecognizer:
         except Exception:
             return False
 
-    def transcribe_wav(self, wav_path: Path | str, timeout: float = 30.0) -> tuple[str, float]:
+    def transcribe_wav(self, wav_path: Path | str, timeout: float = 60.0) -> tuple[str, float]:
         if self._ok(self.primary):
             try:
                 text, conf = self.primary.transcribe_wav(wav_path, timeout=timeout)

@@ -9,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+import jarvis.integrations.whisper_cpp as whisper_cpp
 from jarvis.integrations.whisper_cpp import CascadingRecognizer, WhisperCppRecognizer
 
 
@@ -94,6 +95,37 @@ class WhisperCppTests(unittest.TestCase):
             rec = WhisperCppRecognizer()
         self.assertEqual(rec.binary, self.bin)
         self.assertEqual(rec.model, self.model)
+
+
+class ModelSelectionTests(unittest.TestCase):
+    """small.en is active, with base.en as the on-disk fallback."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _resolve(self):
+        with mock.patch.object(whisper_cpp, "MODEL_DIR", self.dir),              mock.patch.object(whisper_cpp, "DEFAULT_MODEL", self.dir / "ggml-small.en.bin"):
+            return whisper_cpp.resolve_model()
+
+    def test_prefers_small_when_both_present(self):
+        (self.dir / "ggml-small.en.bin").write_bytes(b"ggml")
+        (self.dir / "ggml-base.en.bin").write_bytes(b"ggml")
+        self.assertEqual(self._resolve().name, "ggml-small.en.bin")
+
+    def test_falls_back_to_base_when_small_missing(self):
+        (self.dir / "ggml-base.en.bin").write_bytes(b"ggml")
+        self.assertEqual(self._resolve().name, "ggml-base.en.bin")
+
+    def test_no_model_reports_unavailable_so_sapi_takes_over(self):
+        resolved = self._resolve()
+        self.assertEqual(resolved.name, "ggml-small.en.bin")
+        self.assertFalse(resolved.is_file())
+        rec = WhisperCppRecognizer(binary=self.dir / "nope.exe", model=resolved)
+        self.assertFalse(rec.is_available())
 
 
 class CascadingRecognizerTests(unittest.TestCase):

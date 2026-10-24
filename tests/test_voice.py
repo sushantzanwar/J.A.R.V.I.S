@@ -1,4 +1,5 @@
 """Tests for AudioRecorder, SpeechRecognizer, and Voice PTT backend integration."""
+import ctypes
 import os
 import tempfile
 import unittest
@@ -7,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+import jarvis.integrations.audio_recorder as audio_recorder_module
 from jarvis.integrations.audio_recorder import AudioRecorder
 from jarvis.integrations.speech_recognizer import PS_RECOGNIZE_SCRIPT, SpeechRecognizer
 from jarvis.ui.backend import Backend
@@ -37,6 +39,44 @@ class AudioRecorderUnitTests(unittest.TestCase):
                 self.assertEqual(wf.getsampwidth(), 2)
                 self.assertEqual(wf.getframerate(), 16000)
                 self.assertEqual(wf.getnframes(), 1600)
+
+    def test_read_chunk_preserves_nul_bytes(self):
+        '''The capture bug: PCM is full of NULs, and a c_char_p read stops at the first one.'''
+        pcm = bytes([0, 0, 0x34, 0x12, 0, 0, 0xFF, 0x7F]) * 8
+        buf = ctypes.create_string_buffer(pcm, len(pcm))
+        self.assertEqual(AudioRecorder._read_chunk(buf, len(pcm)), pcm)
+
+    def test_read_chunk_respects_length_and_rejects_empty(self):
+        buf = ctypes.create_string_buffer(bytes([1, 2, 3, 4, 5, 6]), 6)
+        self.assertEqual(AudioRecorder._read_chunk(buf, 4), bytes([1, 2, 3, 4]))
+        self.assertEqual(AudioRecorder._read_chunk(buf, 0), b'')
+        self.assertEqual(AudioRecorder._read_chunk(buf, -1), b'')
+
+    def test_char_pointer_field_would_lose_the_audio(self):
+        '''Why _read_chunk exists: reading a c_char_p field truncates at the first NUL, so
+        ctypes.string_at(hdr.lpData, n) returned heap memory instead of the recording.'''
+        pcm = bytes([0, 0, 0x34, 0x12]) * 16
+
+        class Bad(ctypes.Structure):
+            _fields_ = [('lpData', ctypes.c_char_p)]
+
+        class Good(ctypes.Structure):
+            _fields_ = [('lpData', ctypes.c_void_p)]
+
+        buf = ctypes.create_string_buffer(pcm, len(pcm))
+        bad = Bad()
+        bad.lpData = ctypes.cast(buf, ctypes.c_char_p)
+        self.assertEqual(len(bad.lpData), 0)          # the whole recording vanishes
+        good = Good()
+        good.lpData = ctypes.cast(buf, ctypes.c_void_p)
+        self.assertIsInstance(good.lpData, int)       # a plain address, never truncated
+        self.assertEqual(ctypes.string_at(good.lpData, len(pcm)), pcm)
+
+    def test_capture_loop_never_reads_through_the_pointer(self):
+        source = Path(audio_recorder_module.__file__).read_text(encoding='utf-8')
+        self.assertNotIn('string_at', source)
+        self.assertIn("('lpData', ctypes.c_void_p)".replace("'", '"'), source)
+        self.assertNotIn("('lpData', ctypes.c_char_p)".replace("'", '"'), source)
 
     def test_start_and_stop_mock(self):
         rec = AudioRecorder()
