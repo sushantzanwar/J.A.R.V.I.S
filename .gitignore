@@ -62,8 +62,9 @@ bridge/command_allowlist.json
 *.db.bak-*
 *.db.corrupt-*
 
-# Local agent / assistant state
-.claude/
+# Local agent / assistant state (shared Claude Code skills are tracked on purpose)
+.claude/*
+!.claude/skills/
 .codex/
 
 # Windows / editors
