@@ -57,10 +57,13 @@ class Backend(QObject):
     _answerReady = Signal(str)                # emitted from a worker thread, delivered on the UI thread
     _providerChecked = Signal(str, str, str)  # provider name, state, detail
     _voiceTranscriptionReady = Signal(str, float)  # transcribed text, confidence
+    _voiceHotkeyPressed = Signal()    # emitted from the hotkey thread; queued onto the UI thread
+    _voiceHotkeyReleased = Signal()
 
     def __init__(self, tasks_dir: Path = DEFAULT_TASKS_DIR, provider: ModelProvider | None = None, parent=None,
                  *, store: Store | None = None, factory=make_provider, system_control: SystemControl | None = None,
-                 audio_recorder: AudioRecorder | None = None, speech_recognizer: SpeechRecognizer | None = None):
+                 audio_recorder: AudioRecorder | None = None, speech_recognizer: SpeechRecognizer | None = None,
+                 hotkey_factory=None):
         super().__init__(parent)
         self._closing = False   # set by shutdown(): late results from worker threads are dropped
         self._tasks_dir = Path(tasks_dir)
@@ -91,6 +94,8 @@ class Backend(QObject):
         self._answerReady.connect(self._deliver)
         self._providerChecked.connect(self._set_provider)
         self._voiceTranscriptionReady.connect(self._on_voice_transcribed)
+        self._voiceHotkeyPressed.connect(self.startVoiceRecording)
+        self._voiceHotkeyReleased.connect(self.stopVoiceRecording)
         self._pstate, self._pdetail = "checking", "checking provider…"
         self._record("app_started")
         self.refreshProvider()
@@ -106,10 +111,21 @@ class Backend(QObject):
         self._status_timer.start()
         self._tasks_timer.start()
 
+        # Global hold-to-talk. Only wired when a factory is injected (main() does; tests do not),
+        # so no watcher thread is ever started by a bare Backend or by build().
+        self._hotkey = None
+        if hotkey_factory is not None:
+            self._hotkey = hotkey_factory(
+                lambda: self._emit_from_thread(self._voiceHotkeyPressed),
+                lambda: self._emit_from_thread(self._voiceHotkeyReleased))
+            self._hotkey.start()
+
     def shutdown(self) -> None:
         """Stop timers and ignore anything background threads deliver from now on. Call before the application
         (or the engine that owns this object) goes away, so a request still running cannot signal a dead object."""
         self._closing = True
+        if getattr(self, "_hotkey", None) is not None:
+            self._hotkey.stop()
         self._status_timer.stop()
         self._tasks_timer.stop()
         self._voice_level_timer.stop()
