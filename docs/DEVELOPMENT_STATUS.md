@@ -23,18 +23,21 @@ committed and green. No frontend work has started.
 | `81724d1` | `run.bat` launcher |
 | `e3d7a6c` | Project instructions, handoff note, workflow skills; `.claude/skills/` tracked |
 | `27f23ab` | pytest declared as a development dependency |
+| `aee36a3` | Instructions and status aligned with the pytest decision |
+| `e804ed7` | system_control: intent-anchored command matching, honest lock failure |
 
 ## Verified tests
 
-- `.\scripts\run-tests.ps1` (documented command) → **Ran 338 tests OK** + smoke test
+- `.\scripts\run-tests.ps1` (documented command) → **Ran 341 tests OK** + smoke test
   **ALL PASSED**, exit 0
-- `.venv\Scripts\python.exe -m unittest discover -s tests -t .` → **338 tests, OK**, ~75s
-- `.venv\Scripts\python.exe -m pytest tests/ -q` → **338 passed** (same suite, both runners agree)
+- `.venv\Scripts\python.exe -m unittest discover -s tests -t .` → **341 tests, OK**, ~82s
+- `.venv\Scripts\python.exe -m pytest tests/ -q` → **341 passed** (same suite, both runners agree)
 - `bridge/smoke_test.py` → **ALL PASSED** (13 checks)
 - `tests/test_review.py` → 87 passed
 - Zero skips, so no test is silently inactive on a missing optional dependency.
 
-Reproduced independently of the Gemini audit, which reported the same 338.
+Baseline was 338 before `e804ed7` added three cases; the Gemini audit's 338 was
+reproduced independently at that point.
 
 ## Git state
 
@@ -50,17 +53,13 @@ requires explicit approval. Task queue (`bridge/tasks/`) is deliberately untrack
    mock-tested. With no mic present, `audio_recorder.start()` still returns True and
    records silence (`audio_recorder.py:57-60`); a missing speech language pack surfaces
    only as "I didn't catch that".
-3. **Misleading lock fallback.** A failed `lock_workstation` reports "Workstation lock
-   simulated." (`system_control.py:210`).
-4. **Loose command matching.** `execute_command` uses substring matching, so a sentence
-   containing "restart" or "battery" is intercepted (`system_control.py:263`).
-5. **No approval path for protected actions.** `protected_action` only refuses; nothing
+3. **No approval path for protected actions.** `protected_action` only refuses; nothing
    can approve, so shutdown/restart are unreachable rather than gated.
 
 ## Next task
 
-Decide between (a) a global hold-to-talk hotkey for Stage B, which needs a new dependency
-and your approval, or (b) tightening `system_control` command matching and the lock
-fallback, which needs no new dependency. (b) is the lower-risk default.
+Decide on a global hold-to-talk hotkey for Stage B (known issue 1). It needs a new
+dependency (`keyboard` or `pynput`) and your approval, and was deferred pending
+verification of the `system_control` fixes, which are now committed and green.
 
 Frontend replacement is deferred; do not start it or remove the existing QML.
