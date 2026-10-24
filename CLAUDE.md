@@ -17,8 +17,9 @@ repeat it.
 
 Current baseline: **338 tests, OK, ~80s** plus smoke test ALL PASSED.
 
-Tests are **unittest**-based. pytest is not required and must not be added as a
-dependency — it merely happens to collect the same tests.
+Tests are **unittest**-based and `scripts\run-tests.ps1` is canonical. pytest is
+declared in `requirements-dev.txt` and collects the same 338 tests, so either runner
+is valid; prefer the script, because it also runs the bridge smoke test.
 
 ## Architecture
 

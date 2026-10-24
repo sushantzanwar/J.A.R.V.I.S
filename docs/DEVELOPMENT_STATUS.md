@@ -21,10 +21,15 @@ committed and green. No frontend work has started.
 | `49d3187` | Wiring: voice, PC control and memory commands into app/assistant/backend |
 | `85b3204` | Stage C surface: memory settings panel, diagnostics, core tests |
 | `81724d1` | `run.bat` launcher |
+| `e3d7a6c` | Project instructions, handoff note, workflow skills; `.claude/skills/` tracked |
+| `27f23ab` | pytest declared as a development dependency |
 
 ## Verified tests
 
-- `.venv\Scripts\python.exe -m unittest discover -s tests -t .` → **338 tests, OK**, ~80s
+- `.\scripts\run-tests.ps1` (documented command) → **Ran 338 tests OK** + smoke test
+  **ALL PASSED**, exit 0
+- `.venv\Scripts\python.exe -m unittest discover -s tests -t .` → **338 tests, OK**, ~75s
+- `.venv\Scripts\python.exe -m pytest tests/ -q` → **338 passed** (same suite, both runners agree)
 - `bridge/smoke_test.py` → **ALL PASSED** (13 checks)
 - `tests/test_review.py` → 87 passed
 - Zero skips, so no test is silently inactive on a missing optional dependency.
@@ -51,8 +56,6 @@ requires explicit approval. Task queue (`bridge/tasks/`) is deliberately untrack
    containing "restart" or "battery" is intercepted (`system_control.py:263`).
 5. **No approval path for protected actions.** `protected_action` only refuses; nothing
    can approve, so shutdown/restart are unreachable rather than gated.
-6. **pytest is installed in `.venv` but undeclared** — harmless, and intentionally not
-   added to `requirements-dev.txt`: the project runs on `unittest`.
 
 ## Next task
 
