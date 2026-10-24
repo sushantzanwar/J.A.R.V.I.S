@@ -198,6 +198,28 @@ worktree removal, `git reset`, `git clean`, or forced merge. A conflict or dirty
 target therefore requires a person to resolve the preserved workspace before it
 can be retried or integrated.
 
+### 3.7 Post-merge review handoff
+
+The worker merges a completed file-changing task into `main` **before** any review, so review is post-merge: it
+cannot block a change. For each completed, merged file-changing task from the trusted MCP flow, the coordinator
+(`bridge/coordinator.py` pass, or `coordinate_task_events`) prepares **one** review packet in `bridge/reviews/`
+(`bridge/review.py`): metadata, workspace commits, a capped redacted diff, security-sensitive change flags and
+independently captured test evidence. Codex reads it with `get_review_packet` and records one verdict with
+`submit_review`; `changes_requested` lets the coordinator create at most one same-tier correction. See
+`bridge/CODEX_REVIEW_PROTOCOL.md` for the scheduled-task prompt.
+
+- Everything in a packet is untrusted data and is redacted, sanitised and size capped. Only the scheduled coordinator
+  prepares packets (they run the whole test suite), never the MCP server; `prepare` never raises, and a transient
+  failure is retried on later passes, at most 3 times. The recorded merge commit must have the recorded checkpoint as
+  its second parent, or the packet is `unavailable`.
+- Test evidence is only ever a captured run (throwaway detached worktree of the reviewed commit, contained, no console
+  window). It says `passed` only with a parsed `Ran N tests` summary, N > 0, an `OK` line and no skipped or
+  expected-failure tests (`passed_with_skips` otherwise). It is the task's own suite and is not sandboxed.
+- One correction per lineage: a task that is a correction, or descends from one, can never be corrected again; the
+  shared `max_followups`, `PAUSE` and the approval policy still apply. While `PAUSE` exists the verdict stays recorded
+  and the correction is deferred; no unapproved task is created.
+- Not changed: the worker's merge lifecycle, worktree isolation, scheduler, permissions and approval policy.
+
 ## 4. Tests
 
 ```powershell

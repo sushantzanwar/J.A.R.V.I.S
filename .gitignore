@@ -45,6 +45,7 @@ id_ed25519*
 # Keeping them out of Git means rolling code back can never rewind or erase an approval.
 # (They are copied by the backup step instead.)
 bridge/tasks/
+bridge/reviews/
 bridge/PAUSE
 bridge/monitor_state.json
 bridge/coordination_state.json

@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT))
 import bridge
 import coordination
 import mcp_server
+import review
 from jarvis.worker.log import JsonLog
 
 
@@ -22,6 +23,8 @@ def run_once():
     return coordination.process_once(
         bridge.TASKS, bridge.TASKS.parent / coordination.STATE_FILE,
         lambda request: mcp_server.call("submit_followup", request),
+        prepare_review=lambda task: review.prepare(task, bridge.TASKS.parent, bridge.TASKS.parent.parent),
+        create_correction=mcp_server.create_review_correction,
     )
 
 

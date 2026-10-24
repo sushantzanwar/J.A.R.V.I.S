@@ -52,7 +52,7 @@ def check(name, cond):
 init = rpc("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "smoke", "version": "0"}})
 check("initialize", init["result"]["serverInfo"]["name"] == "jarvis-bridge")
 names = {t["name"] for t in rpc("tools/list")["result"]["tools"]}
-check("MCP exposes task and result-monitor tools", names == {"submit_task", "get_task_status", "get_task_result", "list_tasks", "list_task_events", "submit_followup", "coordinate_task_events"})
+check("MCP exposes task and result-monitor tools", names == {"submit_task", "get_task_status", "get_task_result", "list_tasks", "list_task_events", "submit_followup", "coordinate_task_events", "get_review_packet", "submit_review"})
 r = tool("submit_task", title="smoke", body="api_key=abcdef123456 do nothing", needs="read-only")
 check("trusted read-only task auto-approved", not r["isError"] and '"approved": true' in r["data"])
 check("secret redacted in store", "abcdef123456" not in (Path(tmp) / "001.json").read_text())
