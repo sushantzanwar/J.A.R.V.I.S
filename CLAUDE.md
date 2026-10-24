@@ -15,7 +15,7 @@ repeat it.
 | Run the app | `run.bat` (or `.venv\Scripts\python.exe -m jarvis`) |
 | Build exe | `.\scripts\build.ps1` |
 
-Current baseline: **338 tests, OK, ~80s** plus smoke test ALL PASSED.
+Current baseline: **351 tests, OK, ~77s** plus smoke test ALL PASSED.
 
 Tests are **unittest**-based and `scripts\run-tests.ps1` is canonical. pytest is
 declared in `requirements-dev.txt` and collects the same 338 tests, so either runner
@@ -66,8 +66,9 @@ is valid; prefer the script, because it also runs the bridge smoke test.
 ## Development stages
 
 - **A — PC control:** complete and wired (`0c1e53f`).
-- **B — push-to-talk voice:** pipeline and in-app trigger work (Ctrl+Space, MIC button).
-  No global hotkey; real mic and SAPI paths are mock-tested only.
+- **B — push-to-talk voice:** pipeline, in-app trigger (Ctrl+Space, MIC button) and
+  global hold-to-talk (Ctrl+Alt+Space, `integrations/hotkey.py`) all wired. The mic,
+  SAPI and chord paths are mock-tested only — not verified on real hardware.
 - **C — memory and context:** complete (`3c8b938`, `85b3204`).
 - Do **not** delete or replace the QML frontend; a new frontend is planned separately.
 - Current state and next task: `docs/DEVELOPMENT_STATUS.md`.
