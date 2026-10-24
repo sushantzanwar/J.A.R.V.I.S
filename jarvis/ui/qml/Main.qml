@@ -24,6 +24,7 @@ ApplicationWindow {
     Shortcut { sequence: "Ctrl+,"; onActivated: win.openSettings() }
     Shortcut { sequence: "Ctrl+1"; onActivated: win.tab = 0 }
     Shortcut { sequence: "Ctrl+2"; onActivated: win.tab = 1 }
+    Shortcut { sequence: "Ctrl+Space"; onActivated: if (backend) backend.toggleVoiceRecording() }
 
     Settings {
         id: settings
@@ -350,8 +351,8 @@ ApplicationWindow {
                                 id: input
                                 objectName: "chatInput"
                                 Layout.fillWidth: true
-                                placeholderText: "Ask Jarvis…  (try: help)"
-                                placeholderTextColor: Theme.muted
+                                placeholderText: (backend && backend.voiceRecording) ? "Listening… (speak now, press Ctrl+Space to finish)" : "Ask Jarvis…  (try: help)"
+                                placeholderTextColor: (backend && backend.voiceRecording) ? Theme.cyan : Theme.muted
                                 color: Theme.text
                                 font.family: Theme.sans
                                 font.pixelSize: 14
@@ -362,10 +363,20 @@ ApplicationWindow {
                                 background: Rectangle {
                                     radius: 8
                                     color: "#0A0C0F"
-                                    border.width: input.activeFocus ? 2 : 1
-                                    border.color: input.activeFocus ? Theme.cyan : Theme.border
+                                    border.width: (input.activeFocus || (backend && backend.voiceRecording)) ? 2 : 1
+                                    border.color: (backend && backend.voiceRecording) ? Theme.cyan : (input.activeFocus ? Theme.cyan : Theme.border)
                                 }
                                 onAccepted: send.clicked()
+                            }
+                            GhostButton {
+                                id: ptt
+                                objectName: "pttButton"
+                                text: (backend && backend.voiceRecording) ? "REC ●" : "MIC"
+                                primary: Boolean(backend && backend.voiceRecording)
+                                danger: Boolean(backend && backend.voiceRecording)
+                                implicitWidth: 78
+                                Accessible.name: (backend && backend.voiceRecording) ? "Stop voice recording" : "Push to talk (Control Space)"
+                                onClicked: if (backend) backend.toggleVoiceRecording()
                             }
                             GhostButton {
                                 id: send

@@ -1,18 +1,18 @@
 import QtQuick
 import QtQuick.Shapes
 
-// Animated AI orb. mode: "idle" | "thinking" | "speaking"
+// Animated AI orb. mode: "idle" | "thinking" | "speaking" | "listening"
 Item {
     id: root
     property string mode: "idle"
     property bool reduceMotion: false     // accessibility: freeze the animation
-    readonly property real speed: mode === "thinking" ? 3.0 : (mode === "speaking" ? 1.8 : 1.0)
+    readonly property real speed: mode === "thinking" ? 3.0 : (mode === "speaking" ? 1.8 : (mode === "listening" ? 2.5 : 1.0))
     property real pulse: 0
 
     implicitWidth: 300
     implicitHeight: 300
     Accessible.role: Accessible.Graphic
-    Accessible.name: "Assistant status: " + (mode === "thinking" ? "processing" : (mode === "speaking" ? "responding" : "standing by"))
+    Accessible.name: "Assistant status: " + (mode === "thinking" ? "processing" : (mode === "speaking" ? "responding" : (mode === "listening" ? "listening" : "standing by")))
 
     SequentialAnimation on pulse {
         loops: Animation.Infinite
