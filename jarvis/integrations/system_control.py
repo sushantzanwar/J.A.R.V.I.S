@@ -52,6 +52,28 @@ else:
     VK_MEDIA_PLAY_PAUSE = 0xB3
 
 
+# Device-query and protected-action phrasings, anchored on the whole utterance. Bare substring
+# matching used to intercept any sentence that merely mentioned a keyword ("summarise the battery
+# article", "restart the deployment script"), so each pattern must now match end to end.
+_END = r"\s*\??$"
+BATTERY_RE = re.compile(
+    r"^(?:(?:what|what's|whats|how|how's|hows)\s+(?:is\s+|are\s+)?)?(?:the\s+|my\s+)?"
+    r"(?:battery|power)(?:\s+(?:level|status|percent|percentage|charge|remaining|left))?" + _END)
+UPTIME_RE = re.compile(
+    r"^(?:(?:what|what's|whats)\s+(?:is\s+)?)?(?:the\s+|my\s+|system\s+)?uptime" + _END)
+UPTIME_LONG_RE = re.compile(
+    r"^how\s+long\s+(?:has|have)\s+(?:the\s+|my\s+)?(?:pc|computer|machine|system)\s+"
+    r"been\s+(?:up|running)" + _END)
+ACTIVE_WINDOW_RE = re.compile(
+    r"^(?:(?:what|what's|whats|which)\s+(?:is\s+)?)?(?:the\s+|my\s+)?"
+    r"(?:active|foreground|current|focused)\s+window" + _END)
+PROTECTED_RE = re.compile(
+    r"^(?:please\s+)?(?:can\s+you\s+|could\s+you\s+)?"
+    r"(?:shut\s*down|restart|reboot|power\s*off)"
+    r"(?:\s+(?:the\s+|my\s+)?(?:pc|computer|machine|system|laptop|windows))?"
+    r"(?:\s+(?:now|immediately|please))?" + _END)
+
+
 # Allowlisted desktop application targets.
 # Maps normalized names and aliases to verified Windows shell targets.
 ALLOWED_APPS: dict[str, str] = {
@@ -201,13 +223,14 @@ class SystemControl:
     # ---- Security & Protective Gating ----
 
     def lock_workstation(self) -> str:
-        if _u32 is not None:
-            try:
-                if _u32.LockWorkStation():
-                    return "Workstation locked."
-            except Exception as e:
-                return f"Could not lock workstation: {e}"
-        return "Workstation lock simulated."
+        if _u32 is None:
+            return "Could not lock workstation: the Windows user32 API is unavailable here."
+        try:
+            if _u32.LockWorkStation():
+                return "Workstation locked."
+        except Exception as e:
+            return f"Could not lock workstation: {e}"
+        return "Could not lock workstation: the system refused the request."
 
     def protected_action(self, action_name: str) -> str:
         return (
@@ -250,17 +273,17 @@ class SystemControl:
                 return self.open_app(target)
 
         # 4. System telemetry queries
-        if "battery" in q or "power status" in q:
+        if BATTERY_RE.match(q):
             return self.get_battery()
-        if "uptime" in q:
+        if UPTIME_RE.match(q) or UPTIME_LONG_RE.match(q):
             return self.get_uptime()
-        if "active window" in q or "foreground window" in q or "current window" in q:
+        if ACTIVE_WINDOW_RE.match(q):
             return self.get_active_window()
 
         # 5. Security & protected actions
         if q in ("lock pc", "lock computer", "lock screen", "lock workstation"):
             return self.lock_workstation()
-        if any(w in q for w in ("shutdown", "shut down", "restart", "reboot")):
+        if PROTECTED_RE.match(q):
             return self.protected_action("system shutdown/restart")
 
         return None

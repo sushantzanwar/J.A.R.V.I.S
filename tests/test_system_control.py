@@ -87,6 +87,33 @@ class SystemControlTests(unittest.TestCase):
         res_restart = self.sc.execute_command("restart computer")
         self.assertIn("protected", res_restart.lower())
 
+        for q in ("shut down the computer", "reboot", "power off my pc", "shutdown"):
+            self.assertIn("protected", self.sc.execute_command(q).lower(), q)
+
+    def test_unrelated_sentences_are_not_device_commands(self):
+        """A sentence that merely mentions a keyword must not be treated as a device command."""
+        for q in ("remind me to buy a new battery for the car",
+                  "summarize the battery article",
+                  "restart the deployment script",
+                  "I need to restart my morning routine",
+                  "what is the uptime guarantee in the contract",
+                  "close the current window blinds"):
+            self.assertIsNone(self.sc.execute_command(q), q)
+
+    def test_device_queries_match_natural_phrasings(self):
+        self.assertIn("battery", self.sc.execute_command("what's my battery level?").lower())
+        self.assertIn("uptime", self.sc.execute_command("system uptime").lower())
+        self.assertIn("uptime", self.sc.execute_command("how long has the computer been up").lower())
+        self.assertIsNotNone(self.sc.execute_command("what is the active window"))
+
+    def test_lock_failure_is_reported_honestly(self):
+        """A refused lock must not claim success or a simulation."""
+        with mock.patch("jarvis.integrations.system_control._u32.LockWorkStation",
+                        create=True, return_value=0):
+            res = self.sc.lock_workstation()
+        self.assertIn("could not lock", res.lower())
+        self.assertNotIn("simulated", res.lower())
+
     def test_natural_language_command_router(self):
         with mock.patch("jarvis.integrations.system_control._send_vk", return_value=True):
             self.assertIn("mute", self.sc.execute_command("mute volume").lower())
