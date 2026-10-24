@@ -26,13 +26,15 @@ committed and green. No frontend work has started.
 | `aee36a3` | Instructions and status aligned with the pytest decision |
 | `e804ed7` | system_control: intent-anchored command matching, honest lock failure |
 | `233ccff` | Global hold-to-talk hotkey (Ctrl+Alt+Space), zero new dependencies |
+| `5d3a988` | Fix SAPI never receiving the WAV path (always "I didn't catch that") |
+| `82723d3` | whisper.cpp transcription with SAPI fallback cascade |
 
 ## Verified tests
 
-- `.\scripts\run-tests.ps1` (documented command) → **Ran 351 tests OK** + smoke test
+- `.\scripts\run-tests.ps1` (documented command) → **Ran 365 tests OK** + smoke test
   **ALL PASSED**, exit 0
-- `.venv\Scripts\python.exe -m unittest discover -s tests -t .` → **351 tests, OK**, ~77s
-- `.venv\Scripts\python.exe -m pytest tests/ -q` → **351 passed** (same suite, both runners agree)
+- `.venv\Scripts\python.exe -m unittest discover -s tests -t .` → **365 tests, OK**, ~106s
+- `.venv\Scripts\python.exe -m pytest tests/ -q` → **365 passed** (same suite, both runners agree)
 - `bridge/smoke_test.py` → **ALL PASSED** (13 checks)
 - `tests/test_review.py` → 87 passed
 - Zero skips, so no test is silently inactive on a missing optional dependency.
@@ -47,21 +49,20 @@ requires explicit approval. Task queue (`bridge/tasks/`) is deliberately untrack
 
 ## Known issues
 
-1. **Global hotkey unverified on hardware.** Ctrl+Alt+Space hold-to-talk is implemented
-   and unit-tested through an injected key-state function (`integrations/hotkey.py`), but
-   no test presses a real key. Needs one manual check: hold it with the window unfocused.
-2. **Voice hardware path unverified.** winmm capture and SAPI recognition are only
-   mock-tested. With no mic present, `audio_recorder.start()` still returns True and
-   records silence (`audio_recorder.py:57-60`); a missing speech language pack surfaces
-   only as "I didn't catch that".
+1. **Unverified against a real voice.** Transcription is proven on synthesized speech
+   (12/12 exact, 0.0% WER with base.en) and the chord on an injected key-state function,
+   but no automated test presses a real key or speaks into the microphone.
+2. **Silent no-mic failure.** With no device present, `audio_recorder.start()` still
+   returns True and records silence (`audio_recorder.py:57-60`), so the UI shows
+   "listening" and the user only sees "I didn't catch that". Capture itself is healthy:
+   measured 3.01s captured for a 3s request, 5.01s for 5s, so nothing is dropped.
 3. **No approval path for protected actions.** `protected_action` only refuses; nothing
    can approve, so shutdown/restart are unreachable rather than gated.
 
 ## Next task
 
-Manually verify the two unverified hardware paths in one pass: launch with `run.bat`,
-hold Ctrl+Alt+Space with another window focused, and confirm the orb enters `listening`,
-the mic captures, and SAPI returns text. That closes known issues 1 and 2 together, or
-tells us which one is broken.
+Speak into it. Launch `run.bat`, hold Ctrl+Alt+Space from another window, and confirm
+real-voice transcription quality. Everything is verified on synthesized speech only, and
+a real microphone in a real room is the one thing no test here can stand in for.
 
 Frontend replacement is deferred; do not start it or remove the existing QML.

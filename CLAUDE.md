@@ -15,7 +15,7 @@ repeat it.
 | Run the app | `run.bat` (or `.venv\Scripts\python.exe -m jarvis`) |
 | Build exe | `.\scripts\build.ps1` |
 
-Current baseline: **351 tests, OK, ~77s** plus smoke test ALL PASSED.
+Current baseline: **365 tests, OK, ~106s** plus smoke test ALL PASSED.
 
 Tests are **unittest**-based and `scripts\run-tests.ps1` is canonical. pytest is
 declared in `requirements-dev.txt` and collects the same 338 tests, so either runner
@@ -31,7 +31,8 @@ is valid; prefer the script, because it also runs the bridge smoke test.
 - `jarvis/ui/` — `backend.py` (QObject bridge: slots, signals, properties),
   `qml/` (`Main`, `Orb`, `Settings`, `Theme`, shared controls)
 - `jarvis/integrations/` — `system_control.py` (volume, media, apps, lock),
-  `audio_recorder.py` (winmm via ctypes), `speech_recognizer.py` (Windows SAPI),
+  `audio_recorder.py` (winmm via ctypes), `whisper_cpp.py` (whisper.cpp + the SAPI
+  fallback cascade), `speech_recognizer.py` (Windows SAPI),
   `claude_cli.py`, `process.py`, `registry.py`
 - `jarvis/worker/` — background worker, `allowlist.py`, `workspaces.py`, `log.py`
 - `bridge/` — MCP task bridge: `mcp_server.py` (tools), `bridge.py` (task store),
@@ -53,6 +54,13 @@ is valid; prefer the script, because it also runs the bridge smoke test.
 - `bridge/tasks/`, `bridge/PAUSE` and the state JSON files are gitignored on purpose:
   rolling code back must never rewind or erase an approval.
 
+## Speech models
+
+`tools/whisper/` (whisper-cli.exe) and `models/` (ggml-*.bin) are gitignored: large,
+downloaded, never committed. Without them the app falls back to SAPI automatically.
+`JARVIS_WHISPER_BIN` and `JARVIS_WHISPER_MODEL` override both paths.
+Default is `ggml-base.en.bin`; `small.en` is 3x slower with no accuracy gain measured.
+
 ## Git ownership
 
 - Claude Code owns commits from 2026-10-25. Branch `main`; **no remote — never push.**
@@ -66,9 +74,9 @@ is valid; prefer the script, because it also runs the bridge smoke test.
 ## Development stages
 
 - **A — PC control:** complete and wired (`0c1e53f`).
-- **B — push-to-talk voice:** pipeline, in-app trigger (Ctrl+Space, MIC button) and
-  global hold-to-talk (Ctrl+Alt+Space, `integrations/hotkey.py`) all wired. The mic,
-  SAPI and chord paths are mock-tested only — not verified on real hardware.
+- **B — push-to-talk voice:** complete. In-app trigger (Ctrl+Space, MIC button),
+  global hold-to-talk (Ctrl+Alt+Space) and whisper.cpp transcription with a SAPI
+  fallback. Verified against synthesized speech, not yet against a real voice.
 - **C — memory and context:** complete (`3c8b938`, `85b3204`).
 - Do **not** delete or replace the QML frontend; a new frontend is planned separately.
 - Current state and next task: `docs/DEVELOPMENT_STATUS.md`.
