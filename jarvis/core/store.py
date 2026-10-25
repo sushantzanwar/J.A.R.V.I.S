@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 import sqlite3
+import threading
 import time
 from pathlib import Path
 
@@ -124,6 +125,11 @@ MIGRATIONS = {
         "INSERT INTO memories_fts (memory_id, category, key, value) SELECT id, category, key, value FROM memories WHERE status = 'active'",
         "INSERT INTO messages_fts (message_id, role, text) SELECT id, role, text FROM messages",
     ],
+    4: [
+        "CREATE TABLE agent_tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, updated TEXT NOT NULL, goal TEXT NOT NULL, status TEXT NOT NULL, planner TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', replans INTEGER NOT NULL DEFAULT 0)",
+        "CREATE INDEX idx_agent_tasks_status ON agent_tasks (status)",
+        "CREATE TABLE agent_steps (task_id INTEGER NOT NULL, step_id INTEGER NOT NULL, tool TEXT NOT NULL, args TEXT NOT NULL DEFAULT '{}', depends_on TEXT NOT NULL DEFAULT '[]', success TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0, output TEXT NOT NULL DEFAULT '', updated TEXT NOT NULL, PRIMARY KEY (task_id, step_id))",
+    ],
 }
 
 # The only preferences that exist: safe values only, validated on write.
@@ -157,6 +163,9 @@ class Store:
         self.backup_path: Path | None = None
         self.quarantine_path: Path | None = None
         self._conn: sqlite3.Connection | None = None
+        # The agent writes task progress from a worker thread. SQLite statements are already
+        # thread-safe here; this keeps whole transactions from interleaving.
+        self._lock = threading.RLock()
         self.last_rebuild_ts: str | None = None
         self.last_search_latency_ms: float = 0.0
         self.last_search_results_count: int = 0
@@ -280,12 +289,90 @@ class Store:
     # ---- guarded execution
     def _run(self, sql: str, args=(), fetch=False, default=None):
         try:
-            with self._conn:
+            with self._lock, self._conn:
                 cur = self._conn.execute(sql, args)
                 return cur.fetchall() if fetch else cur.rowcount
         except sqlite3.Error as e:
             self.notice = f"Local data could not be {'read' if fetch else 'saved'} ({type(e).__name__})."
             return default
+
+    # ---- agent tasks: persisted so an interrupted task can be resumed safely
+    def create_agent_task(self, goal: str, planner: str = "") -> int | None:
+        ts = now_iso()
+        try:
+            with self._lock, self._conn:
+                cur = self._conn.execute(
+                    "INSERT INTO agent_tasks (ts, updated, goal, status, planner) VALUES (?, ?, ?, 'planning', ?)",
+                    (ts, ts, redact(goal)[:MAX_TEXT], planner))
+                return cur.lastrowid
+        except sqlite3.Error as e:
+            self.notice = f"Local data could not be saved ({type(e).__name__})."
+            return None
+
+    def save_agent_steps(self, task_id: int, steps: list[dict]) -> None:
+        """Insert or replace steps. Replanning appends new ids; finished steps are untouched."""
+        ts = now_iso()
+        for s in steps:
+            self._run(
+                "INSERT INTO agent_steps (task_id, step_id, tool, args, depends_on, success, status, attempts, output, updated) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(task_id, step_id) DO UPDATE SET tool = excluded.tool, args = excluded.args, "
+                "depends_on = excluded.depends_on, success = excluded.success, status = excluded.status, "
+                "attempts = excluded.attempts, output = excluded.output, updated = excluded.updated",
+                (task_id, int(s["id"]), s["tool"], json.dumps(s.get("args", {})),
+                 json.dumps(s.get("depends_on", [])), str(s.get("success", ""))[:500],
+                 s.get("status", "pending"), int(s.get("attempts", 0)),
+                 redact(str(s.get("output", "")))[:MAX_TEXT], ts))
+
+    def update_agent_step(self, task_id: int, step_id: int, *, status: str,
+                          attempts: int | None = None, output: str | None = None) -> None:
+        sets, args = ["status = ?", "updated = ?"], [status, now_iso()]
+        if attempts is not None:
+            sets.append("attempts = ?"); args.append(int(attempts))
+        if output is not None:
+            sets.append("output = ?"); args.append(redact(str(output))[:MAX_TEXT])
+        self._run(f"UPDATE agent_steps SET {', '.join(sets)} WHERE task_id = ? AND step_id = ?",
+                  (*args, task_id, step_id))
+
+    def update_agent_task(self, task_id: int, *, status: str | None = None, summary: str | None = None,
+                          planner: str | None = None, replans: int | None = None) -> None:
+        sets, args = ["updated = ?"], [now_iso()]
+        for col, val in (("status", status), ("summary", summary), ("planner", planner), ("replans", replans)):
+            if val is not None:
+                sets.append(f"{col} = ?")
+                args.append(redact(val)[:MAX_TEXT] if isinstance(val, str) else val)
+        self._run(f"UPDATE agent_tasks SET {', '.join(sets)} WHERE id = ?", (*args, task_id))
+
+    def agent_task(self, task_id: int) -> dict | None:
+        rows = self._run("SELECT id, ts, updated, goal, status, planner, summary, replans FROM agent_tasks WHERE id = ?",
+                         (task_id,), fetch=True, default=[])
+        if not rows:
+            return None
+        r = rows[0]
+        steps = self._run("SELECT step_id, tool, args, depends_on, success, status, attempts, output "
+                          "FROM agent_steps WHERE task_id = ? ORDER BY step_id", (task_id,), fetch=True, default=[])
+        return {"id": r[0], "ts": r[1], "updated": r[2], "goal": r[3], "status": r[4], "planner": r[5],
+                "summary": r[6], "replans": r[7],
+                "steps": [{"id": s[0], "tool": s[1], "args": json.loads(s[2] or "{}"),
+                           "depends_on": json.loads(s[3] or "[]"), "success": s[4], "status": s[5],
+                           "attempts": s[6], "output": s[7]} for s in steps]}
+
+    def agent_tasks(self, statuses: tuple[str, ...] | None = None, limit: int = 10) -> list[dict]:
+        if statuses:
+            marks = ",".join("?" for _ in statuses)
+            rows = self._run(f"SELECT id FROM agent_tasks WHERE status IN ({marks}) ORDER BY id DESC LIMIT ?",
+                             (*statuses, limit), fetch=True, default=[])
+        else:
+            rows = self._run("SELECT id FROM agent_tasks ORDER BY id DESC LIMIT ?", (limit,), fetch=True, default=[])
+        return [t for t in (self.agent_task(r[0]) for r in rows) if t]
+
+    def mark_interrupted_agent_tasks(self) -> int:
+        """After a crash or restart nothing is running. A step left 'running' may or may not
+        have taken effect, so it becomes 'unknown' rather than being silently repeated."""
+        self._run("UPDATE agent_steps SET status = 'unknown', updated = ? WHERE status = 'running' AND task_id IN "
+                  "(SELECT id FROM agent_tasks WHERE status IN ('planning', 'running'))", (now_iso(),))
+        return self._run("UPDATE agent_tasks SET status = 'interrupted', updated = ? "
+                         "WHERE status IN ('planning', 'running')", (now_iso(),)) or 0
 
     # ---- messages
     def add_message(self, role: str, text: str, ts: str | None = None) -> dict:
@@ -293,7 +380,7 @@ class Store:
         ts = ts or now_iso()
         msg_id = None
         try:
-            with self._conn:
+            with self._lock, self._conn:
                 cur = self._conn.execute("INSERT INTO messages (ts, role, text) VALUES (?, ?, ?)", (ts, role, text))
                 msg_id = cur.lastrowid
                 try:
@@ -625,7 +712,7 @@ class Store:
     def rebuild_fts(self) -> dict:
         """Rebuild both FTS5 virtual tables from authoritative tables."""
         try:
-            with self._conn:
+            with self._lock, self._conn:
                 self._conn.execute("DELETE FROM memories_fts")
                 self._conn.execute(
                     "INSERT INTO memories_fts (memory_id, category, key, value) "

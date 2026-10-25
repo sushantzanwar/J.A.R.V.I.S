@@ -2,7 +2,7 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
-PROVIDER_NAMES = ("offline", "claude-code")  # the only providers the app may select
+PROVIDER_NAMES = ("offline", "ollama", "claude-code")  # the only providers the app may select
 
 CONNECTED = "connected"      # reachable and ready to answer
 DISCONNECTED = "disconnected"  # not installed / not signed in / not reachable

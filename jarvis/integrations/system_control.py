@@ -12,8 +12,12 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import sys
 import time
+from urllib.parse import quote_plus
+
+from jarvis.integrations.process import run_quiet
 from typing import Any
 
 if sys.platform == "win32":
@@ -67,11 +71,70 @@ UPTIME_LONG_RE = re.compile(
 ACTIVE_WINDOW_RE = re.compile(
     r"^(?:(?:what|what's|whats|which)\s+(?:is\s+)?)?(?:the\s+|my\s+)?"
     r"(?:active|foreground|current|focused)\s+window" + _END)
-PROTECTED_RE = re.compile(
-    r"^(?:please\s+)?(?:can\s+you\s+|could\s+you\s+)?"
-    r"(?:shut\s*down|restart|reboot|power\s*off)"
+SHUTDOWN_RE = re.compile(
+    r"^(?:please\s+|can\s+you\s+|could\s+you\s+)*"
+    r"(?:shut\s*down|power\s*off|turn\s+off)"
     r"(?:\s+(?:the\s+|my\s+)?(?:pc|computer|machine|system|laptop|windows))?"
     r"(?:\s+(?:now|immediately|please))?" + _END)
+RESTART_RE = re.compile(
+    r"^(?:please\s+|can\s+you\s+|could\s+you\s+)*"
+    r"(?:restart|reboot)"
+    r"(?:\s+(?:the\s+|my\s+)?(?:pc|computer|machine|system|laptop|windows))?"
+    r"(?:\s+(?:now|immediately|please))?" + _END)
+SLEEP_RE = re.compile(
+    r"^(?:go\s+to\s+sleep|sleep)(?:\s+(?:the\s+|my\s+)?(?:pc|computer|laptop))?\s*\??$"
+    r"|^put\s+(?:the\s+|my\s+)?(?:pc|computer|laptop)\s+to\s+sleep\s*\??$")
+SIGNOUT_RE = re.compile(
+    r"^(?:sign|log)\s*(?:me\s+)?(?:out|off)(?:\s+of\s+windows)?" + _END)
+CANCEL_POWER_RE = re.compile(
+    r"^(?:cancel|abort|stop)\s+(?:the\s+)?(?:shut\s*down|shutdown|restart|reboot)" + _END)
+OPEN_RE = re.compile(
+    r"^(?:open|launch|start|run|turn\s+on|go\s+to|play)\s+(?:the\s+|my\s+)?(.+?)"
+    r"(?:\s+(?:app|application|website|site|please))?\s*$")
+
+
+# ---- Full PC control -------------------------------------------------------
+# The allowlist and the shutdown refusal were removed deliberately, at the owner's
+# request, so Jarvis can act on any spoken instruction. Launching still never goes
+# through a shell, and power actions use a fixed argv, so there is no command
+# injection; what changed is WHAT is permitted, not HOW it is run.
+#
+# JARVIS_POWER_DELAY (seconds, default 10) is the grace period before a shutdown or
+# restart actually happens. Say "cancel shutdown" inside that window to abort.
+# Set it to 0 for immediate action.
+
+WEBSITES = {
+    "youtube": "https://www.youtube.com",
+    "google": "https://www.google.com",
+    "gmail": "https://mail.google.com",
+    "github": "https://github.com",
+    "chatgpt": "https://chat.openai.com",
+    "claude": "https://claude.ai",
+    "maps": "https://maps.google.com",
+    "netflix": "https://www.netflix.com",
+    "spotify": "https://open.spotify.com",
+    "whatsapp": "https://web.whatsapp.com",
+    "twitter": "https://twitter.com",
+    "x": "https://x.com",
+    "reddit": "https://www.reddit.com",
+    "amazon": "https://www.amazon.in",
+    "wikipedia": "https://www.wikipedia.org",
+    "drive": "https://drive.google.com",
+    "linkedin": "https://www.linkedin.com",
+    "instagram": "https://www.instagram.com",
+}
+
+
+# A target carrying switches, pipes, redirects or separators is a command line, not an
+# application name. Those are never launched.
+_LOOKS_LIKE_COMMAND = re.compile(r"[&|;<>^%]|\s[-/][A-Za-z]|\.\.[\/]")
+
+
+def _power_delay() -> int:
+    try:
+        return max(0, int(os.environ.get("JARVIS_POWER_DELAY", "10")))
+    except ValueError:
+        return 10
 
 
 # Allowlisted desktop application targets.
@@ -151,23 +214,105 @@ class SystemControl:
 
     # ---- Application Launcher ----
 
-    def open_app(self, name: str) -> str:
-        clean = name.strip().lower()
-        target = self.allowed_apps.get(clean)
-        if not target:
-            allowed_list = ", ".join(sorted(set(self.allowed_apps.keys())))
-            return (
-                f"Application '{clean}' is not in the allowed list.\n"
-                f"Allowed applications: {allowed_list}."
-            )
+    # ---- Launching: websites, installed apps, anything Windows can resolve ----
 
-        if hasattr(os, "startfile"):
-            try:
-                os.startfile(target)  # type: ignore[attr-defined]
-                return f"Opened {clean} ({target})."
-            except Exception as e:
-                return f"Could not open {clean}: {e}"
-        return f"Simulated opening {clean} ({target}) on non-Windows platform."
+    def open_target(self, name: str) -> str:
+        """Open a website, an installed application, or any path Windows can resolve."""
+        clean = name.strip().strip('"').strip("'")
+        low = clean.lower()
+        if not low:
+            return "Nothing to open."
+
+        if low.startswith(("http://", "https://")) and " " not in clean:
+            return self._launch(clean, f"Opened {clean}.")
+
+        # Full access means "open anything you have", not "run an arbitrary command line".
+        # ShellExecute will happily accept a string carrying switches, so a target that
+        # looks like a command line is searched for instead of launched.
+        if _LOOKS_LIKE_COMMAND.search(clean):
+            return self._launch(f"https://www.google.com/search?q={quote_plus(clean)}",
+                                f"That looked like a command line rather than an app, "
+                                f"so I searched the web for '{low}' instead.")
+
+        site = WEBSITES.get(low) or WEBSITES.get(low.replace(" ", ""))
+        if site:
+            return self._launch(site, f"Opened {low} in your browser.")
+
+        if low.startswith(("http://", "https://")):
+            return self._launch(clean, f"Opened {clean}.")
+        if "." in low and " " not in low:
+            return self._launch("https://" + clean, f"Opened https://{clean}.")
+
+        target = self.allowed_apps.get(low)
+        if target:
+            return self._launch(target, f"Opened {low} ({target}).")
+
+        exe = shutil.which(clean) or shutil.which(low)
+        if exe:
+            return self._launch(exe, f"Opened {low} ({exe}).")
+
+        hit = self._launch(clean, f"Opened {low}.")
+        if not hit.startswith("Could not"):
+            return hit
+        return self._launch(f"https://www.google.com/search?q={quote_plus(clean)}",
+                            f"I could not find an app called '{low}', so I searched the web for it.")
+
+    def open_app(self, name: str) -> str:
+        """Backwards-compatible alias; open_target handles apps, sites and paths."""
+        return self.open_target(name)
+
+    @staticmethod
+    def _launch(target: str, ok_message: str) -> str:
+        if not hasattr(os, "startfile"):
+            return f"Simulated opening {target} on non-Windows platform."
+        try:
+            os.startfile(target)   # type: ignore[attr-defined]
+            return ok_message
+        except Exception as e:
+            return f"Could not open {target}: {e}"
+
+    # ---- Power: shutdown, restart, sleep, sign out ----
+
+    @staticmethod
+    def _run(argv: list) -> tuple:
+        """Fixed argv, never a shell."""
+        try:
+            p = run_quiet(argv, capture_output=True, text=True, timeout=15)
+            return p.returncode == 0, (p.stderr or p.stdout or "").strip()
+        except Exception as e:
+            return False, f"{type(e).__name__}: {e}"
+
+    def shutdown(self) -> str:
+        delay = _power_delay()
+        ok, detail = self._run(["shutdown", "/s", "/t", str(delay)])
+        if not ok:
+            return f"Could not shut down: {detail[:120]}"
+        if delay:
+            return f"Shutting down in {delay} seconds. Say 'cancel shutdown' to stop it."
+        return "Shutting down now."
+
+    def restart(self) -> str:
+        delay = _power_delay()
+        ok, detail = self._run(["shutdown", "/r", "/t", str(delay)])
+        if not ok:
+            return f"Could not restart: {detail[:120]}"
+        if delay:
+            return f"Restarting in {delay} seconds. Say 'cancel shutdown' to stop it."
+        return "Restarting now."
+
+    def cancel_power_action(self) -> str:
+        ok, detail = self._run(["shutdown", "/a"])
+        if ok:
+            return "Cancelled the pending shutdown."
+        return "There was no pending shutdown to cancel."
+
+    def sign_out(self) -> str:
+        ok, detail = self._run(["shutdown", "/l"])
+        return "Signing out." if ok else f"Could not sign out: {detail[:120]}"
+
+    def sleep_pc(self) -> str:
+        ok, detail = self._run(["rundll32.exe", "powrprof.dll,SetSuspendState", "0,1,0"])
+        return "Going to sleep." if ok else f"Could not sleep: {detail[:120]}"
 
     # ---- System Information Queries ----
 
@@ -240,50 +385,68 @@ class SystemControl:
 
     # ---- Command Router ----
 
-    def execute_command(self, query: str) -> str | None:
-        """Parse natural language command and execute the appropriate safe tool.
-        Returns a response string if handled, or None if the query is not a system tool command.
+    def resolve(self, query: str) -> tuple[str, dict] | None:
+        """Map an utterance to (method name, kwargs) WITHOUT executing anything.
+
+        The single grammar for device commands: execute_command runs what this returns,
+        and the agent planner uses it to turn "open youtube and then mute" into steps.
         """
         q = query.strip().lower()
 
         # 1. Volume
         if q in ("mute", "unmute", "mute volume", "toggle mute", "silence audio"):
-            return self.volume_mute()
+            return "volume_mute", {}
         if any(q.startswith(w) or q == w for w in ("volume up", "turn up volume", "raise volume", "louder")):
-            return self.volume_up()
+            return "volume_up", {}
         if any(q.startswith(w) or q == w for w in ("volume down", "turn down volume", "lower volume", "quieter")):
-            return self.volume_down()
+            return "volume_down", {}
 
         # 2. Media
         if q in ("play", "pause", "play music", "pause music", "toggle music", "resume music"):
-            return self.media_play_pause()
+            return "media_play_pause", {}
         if q in ("next track", "next song", "skip track", "skip song"):
-            return self.media_next()
+            return "media_next", {}
         if q in ("prev track", "previous track", "prev song", "previous song"):
-            return self.media_prev()
+            return "media_prev", {}
         if q in ("stop music", "stop audio", "stop playback"):
-            return self.media_stop()
+            return "media_stop", {}
 
-        # 3. Application launcher: "open <app>" or "launch <app>"
-        m = re.match(r"^(?:open|launch|start)\s+([a-zA-Z0-9_\- ]+)$", q)
+        # 3. Power and session control (full access, by owner's request). Checked before
+        #    the launcher so "go to sleep" is never read as "open an app called sleep".
+        if CANCEL_POWER_RE.search(q):
+            return "cancel_power_action", {}
+        if q in ("lock pc", "lock computer", "lock screen", "lock workstation", "lock the workstation", "lock"):
+            return "lock_workstation", {}
+        if SLEEP_RE.search(q):
+            return "sleep_pc", {}
+        if SIGNOUT_RE.search(q):
+            return "sign_out", {}
+        if RESTART_RE.search(q):
+            return "restart", {}
+        if SHUTDOWN_RE.search(q):
+            return "shutdown", {}
+
+        # 4. Launcher: apps, websites, anything Windows can resolve
+        m = OPEN_RE.match(q)
         if m:
             target = m.group(1).strip()
-            # If target looks like a question or command outside launcher
-            if target not in ("status", "tasks", "queue", "time", "date", "help", "about"):
-                return self.open_app(target)
+            if target and target not in ("status", "tasks", "queue", "time", "date", "help", "about"):
+                return "open_target", {"name": target}
 
-        # 4. System telemetry queries
+        # 5. System telemetry queries
         if BATTERY_RE.match(q):
-            return self.get_battery()
+            return "get_battery", {}
         if UPTIME_RE.match(q) or UPTIME_LONG_RE.match(q):
-            return self.get_uptime()
+            return "get_uptime", {}
         if ACTIVE_WINDOW_RE.match(q):
-            return self.get_active_window()
-
-        # 5. Security & protected actions
-        if q in ("lock pc", "lock computer", "lock screen", "lock workstation"):
-            return self.lock_workstation()
-        if PROTECTED_RE.match(q):
-            return self.protected_action("system shutdown/restart")
+            return "get_active_window", {}
 
         return None
+
+    def execute_command(self, query: str) -> str | None:
+        """Run the command an utterance names, or return None if it is not a device command."""
+        call = self.resolve(query)
+        if call is None:
+            return None
+        name, kwargs = call
+        return getattr(self, name)(**kwargs)

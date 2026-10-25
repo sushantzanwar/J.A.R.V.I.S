@@ -27,31 +27,51 @@ def reply(text: str, status: dict, tasks: list[dict], now: datetime | None = Non
     return answer(text, status, tasks, now, system_control=system_control, store=store) or FALLBACK
 
 
+# Anchored intents. These used to be bare substring tests, which swallowed any sentence that
+# merely contained the word: "what is the solar system", "the latest update", "write me a haiku
+# about winter". Now that a language model answers general questions, anything not matched here
+# must fall through to it, so each pattern describes a real request about this machine.
+APPROVE_RE = re.compile(r"^approve\b|\bapprove\b[^.]*\btasks?\b|\btasks?\b[^.]*\bapprove\b")
+STATUS_RE = re.compile(r"^(?:system\s+)?status\b"
+                       r"|^(?:what(?:'s| is)?|how(?:'s| is)?)\s+(?:the\s+)?(?:system\s+)?status\b"
+                       r"|^(?:show|give)\s+(?:me\s+)?(?:the\s+)?(?:system\s+)?status\b"
+                       r"|^system\s+(?:info|load|usage)\b")
+TASKS_RE = re.compile(r"^tasks?\b|^(?:the\s+)?queue\b|^(?:show|list)\s+(?:me\s+)?(?:the\s+)?(?:tasks?|queue)\b"
+                      r"|^(?:what|which)\s+tasks?\b|^task\s+queue\b|^how\s+many\s+tasks?\b")
+TIME_RE = re.compile(r"^time$|^date$|^what\s+time\b|^what(?:'s| is)?\s+the\s+(?:time|date)\b"
+                     r"|^what(?:'s| is)?\s+(?:today(?:'s)?\s+)?date\b|^what\s+day\s+is\b"
+                     r"|^tell\s+me\s+the\s+(?:time|date)\b")
+IDENTITY_RE = re.compile(r"^who\s+(?:are|r)\s+(?:you|u)\b|^what\s+are\s+you\b"
+                         r"|^tell\s+me\s+about\s+(?:yourself|jarvis|you)\b"
+                         r"|^about\s+(?:you|jarvis|this)\b|^what\s+can\s+you\s+do\b")
+
+
 def answer(text: str, status: dict, tasks: list[dict], now: datetime | None = None, system_control=None, store=None) -> str | None:
     """Built-in answer for the fixed offline commands, or None when a model should handle it."""
     q = text.strip().lower()
     now = now or datetime.now()
     if not q:
         return "Say something, or type 'help'."
-    if "approve" in q:
+    if APPROVE_RE.search(q):
         return "I can't approve tasks. Approval is a human-only step: python bridge\\admin.py approve <id>."
     if q in ("help", "?", "commands"):
         return HELP
-    if "status" in q or "system" in q:
+    if STATUS_RE.search(q):
         return (f"CPU {status['cpu']:.0%}, RAM {status['ram']:.0%} "
                 f"({status['ram_used_gb']:.1f} of {status['ram_total_gb']:.1f} GB), "
                 f"disk {status['disk']:.0%} used ({status['disk_used_gb']:.0f} of {status['disk_total_gb']:.0f} GB).")
-    if "task" in q or "queue" in q:
+    if TASKS_RE.search(q):
         waiting = awaiting_approval(tasks)
         active = sum(1 for t in tasks if t["status"] == "in-progress")
         msg = f"{len(tasks)} tasks on record, {active} in progress, {len(waiting)} awaiting your approval."
         if waiting:
             msg += " Waiting: " + ", ".join(f"#{t['id']} {t['title']}" for t in waiting[:3]) + "."
         return msg
-    if "time" in q or "date" in q:
+    if TIME_RE.search(q):
         return now.strftime("It is %H:%M on %A, %d %B %Y.")
-    if "about" in q or "who are you" in q:
-        return "I'm Jarvis, a native Windows assistant in early development. Stage 1 is the interface; models come next."
+    if IDENTITY_RE.search(q):
+        return ("I'm Jarvis, a local-first Windows assistant: offline voice, PC control and memory, "
+                "with a language model for general questions.")
 
     # ---- memory, search and context commands
     if store is not None:
@@ -170,3 +190,8 @@ def answer(text: str, status: dict, tasks: list[dict], now: datetime | None = No
             return tool_result
     return None
 
+
+def is_builtin_query(text: str) -> bool:
+    """Read-only built-ins the agent may chain without a model: status, time, tasks, help."""
+    q = text.strip().lower()
+    return bool(STATUS_RE.search(q) or TIME_RE.search(q) or TASKS_RE.search(q) or q in ("help", "?", "commands"))

@@ -54,17 +54,19 @@ class SystemControlTests(unittest.TestCase):
             self.assertIn("explorer.exe", self.sc.open_app("files").lower())
             self.assertEqual(m_start.call_count, 2)
 
-    def test_app_launcher_rejected(self):
-        with mock.patch("os.startfile", create=True) as m_start:
-            res = self.sc.open_app("powershell -Command Remove-Item")
-            self.assertIn("not in the allowed list", res)
-            m_start.assert_not_called()
-
-    def test_app_launcher_path_traversal_rejected(self):
-        with mock.patch("os.startfile", create=True) as m_start:
-            res = self.sc.open_app("../../windows/system32/cmd.exe")
-            self.assertIn("not in the allowed list", res)
-            m_start.assert_not_called()
+    def test_command_lines_are_never_launched(self):
+        """Full access opens apps and sites, not arbitrary command lines. ShellExecute
+        accepts a string carrying switches, so these are searched for instead."""
+        for bad in ("powershell -Command Remove-Item",
+                    "../../windows/system32/cmd.exe",
+                    "notepad & calc",
+                    "cmd | del"):
+            with mock.patch("os.startfile", create=True) as m_start:
+                res = self.sc.open_target(bad)
+                self.assertIn("command line", res.lower(), bad)
+                # the only thing launched is a web search, never the string itself
+                launched = m_start.call_args[0][0] if m_start.called else ""
+                self.assertTrue(launched.startswith("https://www.google.com/search"), bad)
 
     def test_battery_query(self):
         res = self.sc.get_battery()
@@ -79,16 +81,32 @@ class SystemControlTests(unittest.TestCase):
             res = self.sc.lock_workstation()
             self.assertIn("locked", res.lower())
 
-    def test_protected_destructive_actions(self):
-        res_shutdown = self.sc.execute_command("shutdown now")
-        self.assertIn("protected", res_shutdown.lower())
-        self.assertIn("requires explicit human approval", res_shutdown.lower())
+    def test_power_commands_execute(self):
+        """Full PC control is enabled by the owner. Power actions run a fixed argv,
+        never a shell, and shutdown/restart carry a cancellable grace period."""
+        with mock.patch.object(SystemControl, "_run", return_value=(True, "")) as run:
+            self.assertIn("shutting down", self.sc.execute_command("shutdown").lower())
+            self.assertIn("restarting", self.sc.execute_command("restart the computer").lower())
+            self.assertIn("sign", self.sc.execute_command("sign out").lower())
+            self.assertIn("cancel", self.sc.execute_command("cancel shutdown").lower())
+        argvs = [c.args[0] for c in run.call_args_list]
+        self.assertEqual(argvs[0][:2], ["shutdown", "/s"])
+        self.assertEqual(argvs[1][:2], ["shutdown", "/r"])
+        self.assertEqual(argvs[3], ["shutdown", "/a"])
+        for argv in argvs:
+            self.assertIsInstance(argv, list)      # fixed argv: no shell, no injection
 
-        res_restart = self.sc.execute_command("restart computer")
-        self.assertIn("protected", res_restart.lower())
+    def test_open_resolves_websites_and_apps(self):
+        with mock.patch.object(SystemControl, "_launch", side_effect=lambda t, m: t) as launch:
+            self.assertIn("youtube.com", self.sc.execute_command("open youtube"))
+            self.assertIn("youtube.com", self.sc.execute_command("turn on youtube"))
+            self.assertIn("netflix.com", self.sc.execute_command("play netflix"))
+            self.assertIn("notepad", self.sc.execute_command("open notepad").lower())
+        self.assertTrue(launch.called)
 
-        for q in ("shut down the computer", "reboot", "power off my pc", "shutdown"):
-            self.assertIn("protected", self.sc.execute_command(q).lower(), q)
+    def test_sleep_is_not_mistaken_for_an_app(self):
+        with mock.patch.object(SystemControl, "_run", return_value=(True, "")):
+            self.assertIn("sleep", self.sc.execute_command("go to sleep").lower())
 
     def test_unrelated_sentences_are_not_device_commands(self):
         """A sentence that merely mentions a keyword must not be treated as a device command."""

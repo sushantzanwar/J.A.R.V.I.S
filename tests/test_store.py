@@ -202,8 +202,9 @@ class RecoveryTests(StoreCase):
 class MigrationTests(StoreCase):
     V1 = {1: MIGRATIONS[1]}
     V2 = {1: MIGRATIONS[1], 2: MIGRATIONS[2]}
-    V4 = {**MIGRATIONS, 4: ["ALTER TABLE messages ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0"]}
-    BROKEN = {**MIGRATIONS, 4: ["ALTER TABLE messages ADD COLUMN ok INTEGER", "THIS IS NOT SQL"]}
+    # "the next version after the latest real one", whatever that is
+    V4 = {**MIGRATIONS, max(MIGRATIONS) + 1: ["ALTER TABLE messages ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0"]}
+    BROKEN = {**MIGRATIONS, max(MIGRATIONS) + 1: ["ALTER TABLE messages ADD COLUMN ok INTEGER", "THIS IS NOT SQL"]}
 
     def test_v1_database_migrates_to_latest_with_backup(self):
         s = self.open(migrations=self.V1)
@@ -213,7 +214,7 @@ class MigrationTests(StoreCase):
         m = self.open()
         self.assertEqual(m.notice, "")
         self.assertTrue(m.persistent)
-        self.assertEqual(m._conn.execute("PRAGMA user_version").fetchone()[0], 3)
+        self.assertEqual(m._conn.execute("PRAGMA user_version").fetchone()[0], max(MIGRATIONS))
         self.assertEqual(m.messages()[0]["text"], "v1 message")
         # Memories table is ready and functional
         m.remember("name", "Tony", category="user_fact")
@@ -232,7 +233,7 @@ class MigrationTests(StoreCase):
         m = self.open()
         self.assertEqual(m.notice, "")
         self.assertTrue(m.persistent)
-        self.assertEqual(m._conn.execute("PRAGMA user_version").fetchone()[0], 3)
+        self.assertEqual(m._conn.execute("PRAGMA user_version").fetchone()[0], max(MIGRATIONS))
         self.assertEqual(m.messages()[0]["text"], "v2 legacy chat message")
         # Verify FTS tables were populated during migration
         mems = m.search_memories("neovim")
@@ -253,13 +254,13 @@ class MigrationTests(StoreCase):
         m = self.open(migrations=self.V4)
         self.assertEqual(m.notice, "")
         self.assertTrue(m.persistent)
-        self.assertEqual(m._conn.execute("PRAGMA user_version").fetchone()[0], 4)
+        self.assertEqual(m._conn.execute("PRAGMA user_version").fetchone()[0], max(MIGRATIONS) + 1)
         self.assertEqual(m.messages()[0]["text"], "precious")
         self.assertEqual(m._conn.execute("SELECT pinned FROM messages").fetchone()[0], 0)
         self.assertIsNotNone(m.backup_path)
         backup = sqlite3.connect(m.backup_path)
         self.addCleanup(backup.close)
-        self.assertEqual(backup.execute("PRAGMA user_version").fetchone()[0], 3)
+        self.assertEqual(backup.execute("PRAGMA user_version").fetchone()[0], max(MIGRATIONS))
 
     def test_failed_migration_rolls_back_and_fails_closed(self):
         s = self.open()
@@ -268,18 +269,18 @@ class MigrationTests(StoreCase):
         m = self.open(migrations=self.BROKEN)
         self.assertFalse(m.persistent)
         self.assertIn("Updating your saved data failed", m.notice)
-        self.assertIn("bak-v3", m.notice)
+        self.assertIn(f"bak-v{max(MIGRATIONS)}", m.notice)
         m.close()
         raw = sqlite3.connect(self.db)
         self.addCleanup(raw.close)
-        self.assertEqual(raw.execute("PRAGMA user_version").fetchone()[0], 3)            # not half-migrated
+        self.assertEqual(raw.execute("PRAGMA user_version").fetchone()[0], max(MIGRATIONS))            # not half-migrated
         self.assertNotIn("ok", [c[1] for c in raw.execute("PRAGMA table_info(messages)")])
         self.assertEqual(raw.execute("SELECT text FROM messages").fetchone()[0], "precious")
 
     def test_fresh_database_gets_latest_schema_without_backup(self):
         m = self.open(migrations=self.V4)
         self.assertIsNone(m.backup_path)
-        self.assertEqual(m._conn.execute("PRAGMA user_version").fetchone()[0], 4)
+        self.assertEqual(m._conn.execute("PRAGMA user_version").fetchone()[0], max(MIGRATIONS) + 1)
 
 
 class MemoryTests(StoreCase):

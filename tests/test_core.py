@@ -57,6 +57,22 @@ class AssistantTests(unittest.TestCase):
         self.assertIn("help", self.r("zzz").lower())
         self.assertIn("Say something", self.r("  "))
 
+    def test_general_questions_reach_the_model(self):
+        """answer() returns None so Backend forwards to the provider. These used to be
+        swallowed by bare substring matches on about/system/task/date."""
+        for q in ["what is the solar system",
+                  "tell me about the history of Rome",
+                  "write me a haiku about winter",
+                  "what is the latest update on the mars mission",
+                  "explain multitasking in operating systems",
+                  "why is the sky blue"]:
+            self.assertIsNone(assistant.answer(q, STATUS, []), q)
+
+    def test_local_commands_still_answer_offline(self):
+        for q in ["status", "what time is it", "tasks", "please approve task 7",
+                  "help", "who are you"]:
+            self.assertIsNotNone(assistant.answer(q, STATUS, []), q)
+
     def test_task_summary(self):
         tasks = [{"id": 7, "title": "x", "status": "pending", "approved": False, "needs": "read-only", "updated": ""}]
         self.assertIn("1 awaiting your approval", self.r("tasks", tasks))
