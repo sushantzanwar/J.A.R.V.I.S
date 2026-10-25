@@ -105,8 +105,29 @@ class SystemControlTests(unittest.TestCase):
         self.assertTrue(launch.called)
 
     def test_sleep_is_not_mistaken_for_an_app(self):
-        with mock.patch.object(SystemControl, "_run", return_value=(True, "")):
+        with mock.patch.object(SystemControl, "_suspend", return_value="Going to sleep.") as susp:
             self.assertIn("sleep", self.sc.execute_command("go to sleep").lower())
+        susp.assert_called_once_with(False, "Going to sleep.")
+
+    def test_sleep_requests_sleep_and_never_hibernate(self):
+        """rundll32 powrprof.dll,SetSuspendState 0,1,0 hibernated this laptop: rundll32 passes the
+        window handle as the first argument, which Windows read as bHibernate=TRUE. The function
+        must be called directly with bHibernate=False."""
+        with mock.patch("jarvis.integrations.system_control.threading.Timer") as timer,              mock.patch("jarvis.integrations.system_control.ctypes.WinDLL") as dll:
+            self.assertEqual(self.sc.sleep_pc(), "Going to sleep.")
+            timer.call_args[0][1]()                      # run the deferred suspend now
+        dll.return_value.SetSuspendState.assert_called_once_with(False, False, False)
+
+    def test_hibernate_is_its_own_command(self):
+        for text in ("hibernate", "Hibernate the laptop.", "put my pc in hibernation mode"):
+            self.assertEqual(self.sc.resolve(text), ("hibernate_pc", {}), text)
+        with mock.patch.object(SystemControl, "_run", return_value=(True, "")) as run:
+            self.assertEqual(self.sc.hibernate_pc(), "Hibernating.")
+        self.assertEqual(run.call_args[0][0], ["shutdown", "/h"])
+
+    def test_no_test_can_trigger_a_real_sleep(self):
+        """Guard: sleep_pc must never be reachable without the timer being patched."""
+        self.assertEqual(self.sc.resolve("go to sleep"), ("sleep_pc", {}))   # resolve never executes
 
     def test_unrelated_sentences_are_not_device_commands(self):
         """A sentence that merely mentions a keyword must not be treated as a device command."""

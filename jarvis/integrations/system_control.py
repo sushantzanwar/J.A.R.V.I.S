@@ -10,11 +10,13 @@ Zero external dependencies; standard library ctypes only.
 """
 from __future__ import annotations
 
+import ctypes
 import os
 import re
 import shutil
 import socket
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote_plus
@@ -84,10 +86,15 @@ RESTART_RE = re.compile(
     r"(?:\s+(?:the\s+|my\s+)?(?:pc|computer|machine|system|laptop|windows))?"
     r"(?:\s+(?:now|immediately|please))?" + _END)
 SLEEP_RE = re.compile(
-    r"^(?:please\s+)?(?:(?:go|going)\s+to\s+sleep|sleep(?:\s+down)?|sleep\s+mode|hibernate)"
+    r"^(?:please\s+)?(?:(?:go|going)\s+to\s+sleep|sleep(?:\s+down)?|sleep\s+mode)"
     r"(?:\s+(?:the\s+|my\s+|this\s+)?(?:pc|computer|laptop|machine|system))?\s*\??$"
     r"|^(?:please\s+)?(?:put|set|send|switch|turn)\s+(?:the\s+|my\s+|this\s+)?(?:pc|computer|laptop|machine|system)"
-    r"\s+(?:to|in|into|on)\s+(?:sleep|hibernate)(?:\s+mode)?\s*\??$")
+    r"\s+(?:to|in|into|on)\s+sleep(?:\s+mode)?\s*\??$")
+HIBERNATE_RE = re.compile(
+    r"^(?:please\s+)?hibernate(?:\s+(?:the\s+|my\s+|this\s+)?(?:pc|computer|laptop|machine|system))?\s*\??$"
+    r"|^(?:please\s+)?(?:put|set|send|switch|turn)\s+(?:the\s+|my\s+|this\s+)?(?:pc|computer|laptop|machine|system)"
+    r"\s+(?:to|in|into|on)\s+hibernat(?:e|ion)(?:\s+mode)?\s*\??$"
+    r"|^hibernat(?:e|ion)\s+mode\s*\??$")
 SIGNOUT_RE = re.compile(
     r"^(?:sign|log)\s*(?:me\s+)?(?:out|off)(?:\s+of\s+windows)?" + _END)
 CANCEL_POWER_RE = re.compile(
@@ -392,8 +399,33 @@ class SystemControl:
         return "Signing out." if ok else f"Could not sign out: {detail[:120]}"
 
     def sleep_pc(self) -> str:
-        ok, detail = self._run(["rundll32.exe", "powrprof.dll,SetSuspendState", "0,1,0"])
-        return "Going to sleep." if ok else f"Could not sleep: {detail[:120]}"
+        """Real sleep (Modern Standby / S3), not hibernate.
+
+        This used to run `rundll32 powrprof.dll,SetSuspendState 0,1,0`, which looks like
+        "hibernate=0" but is not: rundll32 passes the window handle as the first argument,
+        so Windows read it as bHibernate=TRUE and the laptop hibernated, which looks like a
+        full shutdown. Calling the function directly with False asks for sleep.
+        """
+        return self._suspend(False, "Going to sleep.")
+
+    def hibernate_pc(self) -> str:
+        """Hibernate: saves memory to disk and powers off, resuming where you left off."""
+        ok, detail = self._run(["shutdown", "/h"])
+        return "Hibernating." if ok else f"Could not hibernate: {detail[:120]}"
+
+    def _suspend(self, hibernate: bool, message: str) -> str:
+        if sys.platform != "win32":
+            return "Could not sleep: only supported on Windows."
+        try:
+            fn = ctypes.WinDLL("powrprof").SetSuspendState
+            fn.argtypes = [ctypes.c_bool, ctypes.c_bool, ctypes.c_bool]
+            fn.restype = ctypes.c_bool
+        except Exception as e:
+            return f"Could not sleep: {type(e).__name__}: {e}"
+        # Suspend after the reply has been shown, on a short timer, because the call does
+        # not return until the machine wakes again.
+        threading.Timer(1.0, lambda: fn(hibernate, False, False)).start()
+        return message
 
     # ---- System Information Queries ----
 
@@ -499,6 +531,8 @@ class SystemControl:
             return "cancel_power_action", {}
         if q in ("lock pc", "lock computer", "lock screen", "lock workstation", "lock the workstation", "lock"):
             return "lock_workstation", {}
+        if HIBERNATE_RE.search(q):
+            return "hibernate_pc", {}
         if SLEEP_RE.search(q):
             return "sleep_pc", {}
         if SIGNOUT_RE.search(q):

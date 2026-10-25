@@ -100,7 +100,7 @@ class SleepAndTranscriptTests(unittest.TestCase):
 
     def test_sleep_phrasings(self):
         for text in ("Put this laptop in sleep mode.", "go to sleep", "sleep down the laptop",
-                     "Put my laptop to sleep.", "sleep mode", "hibernate the pc", "Go to sleep."):
+                     "Put my laptop to sleep.", "sleep mode", "Go to sleep."):
             self.assertEqual(self.sc.resolve(text), ("sleep_pc", {}), text)
 
     def test_trailing_punctuation_never_changes_the_command(self):

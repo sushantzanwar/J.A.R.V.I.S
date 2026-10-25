@@ -116,6 +116,7 @@ def build_registry(system_control, *, local_command: Callable[[str], str] | None
     # Power and session actions end what can usefully follow, so the planner runs them
     # last, and none is ever retried automatically.
     for name, desc in (("lock_workstation", "Lock the PC."), ("sleep_pc", "Put the PC to sleep."),
+                       ("hibernate_pc", "Hibernate the PC (saves to disk and powers off)."),
                        ("sign_out", "Sign out of Windows."), ("restart", "Restart the PC."),
                        ("shutdown", "Shut down the PC.")):
         r.register(Tool(name, desc, getattr(sc, name), kind="power", retryable=False))
