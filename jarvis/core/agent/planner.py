@@ -92,13 +92,29 @@ POWER_REQUESTS = {
 }
 
 
+def requested(tool: str, goal: str, resolve) -> bool:
+    """Did the request actually COMMAND this power action?
+
+    With the command grammar available, a clause must resolve to exactly this tool, so "open sleep
+    timer" or "why can't I sleep" never allow a planned sleep. Without it, fall back to the word check.
+    """
+    if resolve is not None:
+        parts = [p.strip(" .!?") for p in _CONNECTOR.split(goal) if p.strip(" .!?")] or [goal]
+        for part in [goal, *parts]:
+            call = resolve(part)
+            if call is not None and call[0] == tool:
+                return True
+        return False
+    return bool(POWER_REQUESTS[tool].search(goal.lower()))
+
+
 def _tool_name(raw) -> str:
     """Models write 'volume_mute()' or ' Volume_Mute '; the tool is still volume_mute."""
     return re.sub(r"\(.*\)\s*$", "", str(raw or "")).strip().lower()
 
 
 def validate_plan(data: dict, registry: ToolRegistry, *, first_id: int = 1,
-                  done_ids: tuple = (), goal: str | None = None) -> list[Step]:
+                  done_ids: tuple = (), goal: str | None = None, resolve=None) -> list[Step]:
     """Untrusted plan -> executable steps, renumbered from first_id. Raises PlanError."""
     raw_steps = data.get("steps")
     if not isinstance(raw_steps, list):
@@ -120,7 +136,7 @@ def validate_plan(data: dict, registry: ToolRegistry, *, first_id: int = 1,
         args = raw.get("args") or {}
         if not isinstance(args, dict):
             raise PlanError(f"step {n} has arguments that are not an object")
-        if goal is not None and tool in POWER_REQUESTS and not POWER_REQUESTS[tool].search(goal.lower()):
+        if goal is not None and tool in POWER_REQUESTS and not requested(tool, goal, resolve):
             raise PlanError(f"step {n} uses {tool}, but the request never asked for that; remove it")
         spec = registry.get(tool).args
         missing, extra = sorted(set(spec) - set(args)), sorted(set(args) - set(spec))
@@ -226,9 +242,10 @@ def build_prompt(goal: str, registry: ToolRegistry, context: str = "") -> str:
 
 
 class LLMPlanner:
-    def __init__(self, provider, name: str) -> None:
+    def __init__(self, provider, name: str, resolve=None) -> None:
         self.provider = provider
         self.name = name
+        self.resolve = resolve
 
     def plan(self, goal: str, registry: ToolRegistry, *, first_id: int = 1,
              done_ids: tuple = (), context: str = "") -> list[Step]:
@@ -237,4 +254,4 @@ class LLMPlanner:
             raw = self.provider.generate(prompt, system=PLANNER_SYSTEM, json_mode=True)
         else:
             raw = self.provider.generate(f"{PLANNER_SYSTEM}\n\n{prompt}")
-        return validate_plan(extract_json(raw), registry, first_id=first_id, done_ids=done_ids, goal=goal)
+        return validate_plan(extract_json(raw), registry, first_id=first_id, done_ids=done_ids, goal=goal, resolve=self.resolve)

@@ -115,12 +115,12 @@ class Agent:
         out = []
         ollama = self._get_ollama()
         if ollama is not None and getattr(ollama, "name", "") == "ollama" and self._is_connected(ollama):
-            out.append(LLMPlanner(ollama, "ollama"))
+            out.append(LLMPlanner(ollama, "ollama", self.system_control.resolve))
         chat = self._chat_provider()
         # Claude costs plan usage, so it is used only when the user chose it as their provider,
         # and only after Ollama (listed first) failed to plan.
         if chat is not None and getattr(chat, "name", "") == "claude-code" and self._chat_connected():
-            out.append(LLMPlanner(chat, "claude-code"))
+            out.append(LLMPlanner(chat, "claude-code", self.system_control.resolve))
         return out
 
     def _ask_model(self, question: str) -> str:

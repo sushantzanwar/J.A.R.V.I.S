@@ -75,30 +75,32 @@ UPTIME_LONG_RE = re.compile(
 ACTIVE_WINDOW_RE = re.compile(
     r"^(?:(?:what|what's|whats|which)\s+(?:is\s+)?)?(?:the\s+|my\s+)?"
     r"(?:active|foreground|current|focused)\s+window" + _END)
-SHUTDOWN_RE = re.compile(
-    r"^(?:please\s+|can\s+you\s+|could\s+you\s+)*"
-    r"(?:shut\s*down|power\s*off|turn\s+off)"
-    r"(?:\s+(?:the\s+|my\s+)?(?:pc|computer|machine|system|laptop|windows))?"
-    r"(?:\s+(?:now|immediately|please))?" + _END)
-RESTART_RE = re.compile(
-    r"^(?:please\s+|can\s+you\s+|could\s+you\s+)*"
-    r"(?:restart|reboot)"
-    r"(?:\s+(?:the\s+|my\s+)?(?:pc|computer|machine|system|laptop|windows))?"
-    r"(?:\s+(?:now|immediately|please))?" + _END)
+# Power commands share one shape: [polite prefix] <verb> [device] [trailing words], anchored on the
+# whole utterance. The trailing words matter: "go to sleep now" and "shut down please" are how
+# people actually talk, and without them these fell through to the app launcher.
+_POLITE = r"^(?:(?:please|jarvis|hey\s+jarvis|ok\s+jarvis|can\s+you|could\s+you|would\s+you)[,\s]+)*"
+_DEVICE = r"(?:\s+(?:the\s+|my\s+|this\s+)?(?:pc|computer|laptop|machine|system|device|windows))?"
+_TAIL = r"(?:\s+(?:right\s+now|now|immediately|please|for\s+me|tonight|asap))*"
+_PUT = r"(?:put|set|send|switch|turn|take)\s+(?:the\s+|my\s+|this\s+)?(?:pc|computer|laptop|machine|system|device)"
+
+SHUTDOWN_RE = re.compile(_POLITE + r"(?:shut\s*down|power\s*off|turn\s+off)" + _DEVICE + _TAIL + _END)
+RESTART_RE = re.compile(_POLITE + r"(?:restart|reboot)" + _DEVICE + _TAIL + _END)
 SLEEP_RE = re.compile(
-    r"^(?:please\s+)?(?:(?:go|going)\s+to\s+sleep|sleep(?:\s+down)?|sleep\s+mode)"
-    r"(?:\s+(?:the\s+|my\s+|this\s+)?(?:pc|computer|laptop|machine|system))?\s*\??$"
-    r"|^(?:please\s+)?(?:put|set|send|switch|turn)\s+(?:the\s+|my\s+|this\s+)?(?:pc|computer|laptop|machine|system)"
-    r"\s+(?:to|in|into|on)\s+sleep(?:\s+mode)?\s*\??$")
+    _POLITE + r"(?:(?:go|going)\s+to\s+sleep|sleep(?:\s+down)?|sleep\s+mode|suspend)" + _DEVICE + _TAIL + _END
+    + "|" + _POLITE + _PUT + r"\s+(?:to|in|into|on)\s+sleep(?:\s+mode)?" + _TAIL + _END)
 HIBERNATE_RE = re.compile(
-    r"^(?:please\s+)?hibernate(?:\s+(?:the\s+|my\s+|this\s+)?(?:pc|computer|laptop|machine|system))?\s*\??$"
-    r"|^(?:please\s+)?(?:put|set|send|switch|turn)\s+(?:the\s+|my\s+|this\s+)?(?:pc|computer|laptop|machine|system)"
-    r"\s+(?:to|in|into|on)\s+hibernat(?:e|ion)(?:\s+mode)?\s*\??$"
-    r"|^hibernat(?:e|ion)\s+mode\s*\??$")
-SIGNOUT_RE = re.compile(
-    r"^(?:sign|log)\s*(?:me\s+)?(?:out|off)(?:\s+of\s+windows)?" + _END)
+    _POLITE + r"hibernat(?:e|ion)(?:\s+mode)?" + _DEVICE + _TAIL + _END
+    + "|" + _POLITE + _PUT + r"\s+(?:to|in|into|on)\s+hibernat(?:e|ion)(?:\s+mode)?" + _TAIL + _END)
+SIGNOUT_RE = re.compile(_POLITE + r"(?:sign|log)\s*(?:me\s+)?(?:out|off)(?:\s+of\s+windows)?" + _TAIL + _END)
+LOCK_RE = re.compile(_POLITE + r"lock(?:\s+(?:the\s+|my\s+|this\s+)?(?:pc|computer|laptop|screen|workstation|device|windows))?"
+                     + _TAIL + _END)
 CANCEL_POWER_RE = re.compile(
     r"^(?:cancel|abort|stop)\s+(?:the\s+)?(?:shut\s*down|shutdown|restart|reboot)" + _END)
+# A launcher target that begins with one of these is a power request that did not match the
+# strict grammar. It must never be opened as an app ("sleep now" -> a web search), so it is
+# left to the model instead.
+POWER_WORDS = ("sleep", "hibernate", "hibernation", "suspend", "shutdown", "shut", "restart", "reboot", "lock",
+               "sign", "log", "poweroff", "power")
 OPEN_RE = re.compile(
     r"^(?:open|launch|start|run|turn\s+on|go\s+to|play)\s+(?:the\s+|my\s+)?(.+?)"
     r"(?:\s+(?:app|application|website|site|please))?\s*$")
@@ -529,7 +531,7 @@ class SystemControl:
         #    the launcher so "go to sleep" is never read as "open an app called sleep".
         if CANCEL_POWER_RE.search(q):
             return "cancel_power_action", {}
-        if q in ("lock pc", "lock computer", "lock screen", "lock workstation", "lock the workstation", "lock"):
+        if LOCK_RE.search(q):
             return "lock_workstation", {}
         if HIBERNATE_RE.search(q):
             return "hibernate_pc", {}
@@ -549,6 +551,9 @@ class SystemControl:
             # so the target is sliced from the original text, whose characters line up with q.
             original = query.strip().rstrip(" .!?,;")
             target = (original[m.start(1):m.end(1)] if len(original) == len(q) else m.group(1)).strip()
+            first = target.lower().split()[0] if target.split() else ""
+            if first in POWER_WORDS:
+                return None
             if target and target.lower() not in ("status", "tasks", "queue", "time", "date", "help", "about"):
                 return "open_target", {"name": target}
 

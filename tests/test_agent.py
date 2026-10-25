@@ -113,6 +113,64 @@ class SleepAndTranscriptTests(unittest.TestCase):
             self.assertIsNone(self.sc.resolve(text), text)
 
 
+class PowerGrammarTests(unittest.TestCase):
+    """Every way of asking for a power action must resolve to exactly that action, with the
+    filler words real speech adds, and must NEVER fall through to the app launcher. These
+    transcripts were produced by Parakeet from Windows TTS audio in the verification run."""
+
+    CASES = {
+        "sleep_pc": ["go to sleep", "Go to sleep.", "sleep", "sleep mode", "go to sleep now", "sleep now",
+                     "go to sleep please", "go to sleep for me", "please go to sleep", "put my PC to sleep",
+                     "Put this laptop in sleep mode.", "sleep the laptop", "sleep down the laptop",
+                     "Hey Jarvis put the laptop to sleep right now", "put the laptop to sleep"],
+        "hibernate_pc": ["hibernate", "Hibernate.", "hibernate now", "Hibernate the laptop.",
+                         "put my pc in hibernation mode"],
+        "shutdown": ["shut down the laptop", "Shut down the laptop.", "please shut down now", "turn off the laptop",
+                     "shutdown", "power off"],
+        "restart": ["restart the laptop", "reboot", "restart now"],
+        "lock_workstation": ["lock", "Lock the screen.", "lock the pc", "lock workstation"],
+        "sign_out": ["sign out", "Sign out.", "log off"],
+    }
+
+    def test_every_phrasing_resolves_to_its_action(self):
+        sc = SystemControl()
+        for tool, phrases in self.CASES.items():
+            for phrase in phrases:
+                self.assertEqual(sc.resolve(phrase), (tool, {}), phrase)
+
+    def test_sleep_never_becomes_shutdown_or_hibernate(self):
+        sc = SystemControl()
+        for phrase in self.CASES["sleep_pc"]:
+            self.assertNotIn(sc.resolve(phrase)[0], ("shutdown", "hibernate_pc", "restart"), phrase)
+
+    def test_sentences_that_only_mention_these_words_do_nothing(self):
+        sc = SystemControl()
+        for phrase in ("I cannot sleep at night", "how many hours should I sleep",
+                       "tell me about hibernation in bears", "what is sleep mode", "open sleep timer",
+                       "why does my laptop shut down by itself"):
+            call = sc.resolve(phrase)
+            self.assertTrue(call is None or call[0] not in
+                            ("sleep_pc", "hibernate_pc", "shutdown", "restart", "sign_out", "lock_workstation"),
+                            phrase)
+
+    def test_power_words_are_never_opened_as_apps(self):
+        sc = SystemControl()
+        for phrase in ("open sleep timer", "go to sleep tonight maybe", "launch shutdown helper"):
+            call = sc.resolve(phrase)
+            self.assertFalse(call is not None and call[0] == "open_target", phrase)
+        self.assertEqual(sc.resolve("go to sleepy hollow"), ("open_target", {"name": "sleepy hollow"}))
+
+    def test_model_may_plan_a_power_action_only_if_commanded(self):
+        sc = FakeControl()
+        reg = build_registry(sc)
+        plan = {"steps": [{"tool": "sleep_pc", "args": {}}]}
+        for goal in ("open sleep timer", "why can't I sleep at night"):
+            with self.assertRaisesRegex(PlanError, "never asked"):
+                validate_plan(plan, reg, goal=goal, resolve=sc.resolve)
+        for goal in ("go to sleep now", "mute and then go to sleep"):
+            self.assertEqual(validate_plan(plan, reg, goal=goal, resolve=sc.resolve)[0].tool, "sleep_pc")
+
+
 class WebsiteOpeningTests(unittest.TestCase):
     """Chrome is the default browser; links go to it whole, with their case and query intact."""
 
