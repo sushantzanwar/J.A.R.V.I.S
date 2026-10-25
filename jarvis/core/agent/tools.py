@@ -30,6 +30,8 @@ class Tool:
     args: dict[str, str] = field(default_factory=dict)   # name -> description; all required
     kind: str = "action"        # action | query | power
     retryable: bool = True      # power and session actions are never repeated automatically
+    risk: str = "low"           # low | consequential (see jarvis.core.security.permissions)
+    describe: Callable[[dict], str] | None = None    # "send an email to X" for the confirmation prompt
 
 
 @dataclass
@@ -66,6 +68,16 @@ class ToolRegistry:
             lines.append(f"- {t.name}({sig}): {t.description}")
         return "\n".join(lines)
 
+    def describe_call(self, name: str, args: dict) -> str:
+        tool = self._tools.get(name)
+        if tool is not None and tool.describe is not None:
+            try:
+                return tool.describe(args)
+            except Exception:
+                pass
+        shown = ", ".join(f"{k}={str(v)[:40]!r}" for k, v in (args or {}).items())
+        return f"run {name}({shown})"
+
     def run(self, name: str, args: dict) -> ToolResult:
         tool = self._tools.get(name)
         if tool is None:
@@ -96,7 +108,8 @@ def _make_wait(sleep: Callable[[float], None]) -> Callable[[str], str]:
 
 def build_registry(system_control, *, local_command: Callable[[str], str] | None = None,
                    ask_model: Callable[[str], str] | None = None,
-                   sleep: Callable[[float], None] = time.sleep) -> ToolRegistry:
+                   sleep: Callable[[float], None] = time.sleep,
+                   extra_tools: tuple = ()) -> ToolRegistry:
     sc = system_control
     r = ToolRegistry()
     r.register(Tool("open_target", "Open an app, website or file, e.g. 'youtube', 'notepad', 'https://...'.",
@@ -128,4 +141,6 @@ def build_registry(system_control, *, local_command: Callable[[str], str] | None
     if ask_model is not None:
         r.register(Tool("ask_model", "Answer a question or write text with the language model.",
                         ask_model, {"question": "the question or request"}, kind="query"))
+    for tool in extra_tools:
+        r.register(tool)
     return r

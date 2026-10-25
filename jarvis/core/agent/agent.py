@@ -33,9 +33,13 @@ GOAL_RE = re.compile(
     r"^(?:(?:please|jarvis|hey\s+jarvis|ok\s+jarvis|can\s+you|could\s+you|would\s+you)[,\s]+)*"
     r"(?:open|launch|start|run|play|close|set\s*up|prepare|get\s+(?:my|the|me|it|everything|ready)|make|turn|"
     r"switch|put|organi[sz]e|clean\s*up|shut|restart|reboot|lock|mute|unmute|increase|decrease|raise|lower|"
-    r"pause|resume|search|find|look\s+up|check|go\s+to|navigate|show)\b")
+    r"pause|resume|search|find|look\s+up|check|go\s+to|navigate|show|send|e-?mail|schedule|add|create|read|"
+    r"connect|link|remind|book)\b")
 
 PLAN_CORRECTIONS = 1    # extra attempts per planner after a rejected plan
+# Only meaningful while a consequential step is waiting for the user.
+YES_RE = re.compile(r"^(?:yes|yeah|yep|yup|sure|ok|okay|confirm(?:ed)?|approved?|go\s+ahead|do\s+it|proceed|please\s+do)\b")
+NO_RE = re.compile(r"^(?:no|nope|nah|cancel|stop|abort|decline|never\s*mind|don'?t|do\s+not)\b")
 
 
 class Agent:
@@ -46,7 +50,8 @@ class Agent:
                  local_command: Callable[[str], str] | None = None,
                  progress: Callable[[str], None] | None = None,
                  planners: Callable[[], list] | None = None,
-                 sleep: Callable[[float], None] = time.sleep) -> None:
+                 sleep: Callable[[float], None] = time.sleep,
+                 services: tuple = (), policy=None, actionlog=None) -> None:
         self.system_control = system_control
         self.store = store
         self._chat_provider = chat_provider
@@ -55,9 +60,11 @@ class Agent:
         self._ollama = None
         self._planners_override = planners
         self._progress = progress or (lambda msg: None)
-        self.registry = build_registry(system_control, local_command=local_command,
-                                       ask_model=self._ask_model, sleep=sleep)
-        self.executor = Executor(self.registry, store=store, progress=self._emit)
+        self.services = list(services)
+        self.registry = build_registry(system_control, local_command=local_command, ask_model=self._ask_model,
+                                       sleep=sleep, extra_tools=tuple(t for sv in self.services for t in sv.tools()))
+        self.executor = Executor(self.registry, store=store, progress=self._emit, policy=policy, actionlog=actionlog)
+        self._pending = None      # (task_id, steps, replan, approved) while waiting for a yes or no
         if store is not None:
             # Nothing is running at startup; anything left mid-flight was interrupted.
             store.mark_interrupted_agent_tasks()
@@ -69,8 +76,15 @@ class Agent:
             pass
 
     # ---- request understanding -------------------------------------------------------
+    def _service_call(self, text: str):
+        for sv in self.services:
+            call = sv.resolve(text)
+            if call is not None and call[0] in self.registry:
+                return call
+        return None
+
     def _resolve(self, part: str):
-        call = self.system_control.resolve(part)
+        call = self.system_control.resolve(part) or self._service_call(part)
         if call is not None:
             return call
         if is_builtin_query(part) and "local_command" in self.registry:
@@ -89,7 +103,9 @@ class Agent:
         low = text.strip().lower()
         if RESUME_RE.search(low) or TASK_STATUS_RE.search(low):
             return True
-        if self.compound_steps(text):
+        if (YES_RE.search(low) or NO_RE.search(low)) and self.has_pending():
+            return True
+        if self._service_call(text) is not None or self.compound_steps(text):
             return True
         return bool(_CONNECTOR.search(low) and GOAL_RE.search(low))
 
@@ -179,10 +195,18 @@ class Agent:
         """Entry point, called on a worker thread. Always returns a truthful summary."""
         q = text.strip()
         low = q.lower()
+        if self.has_pending():
+            if YES_RE.search(low):
+                return self.confirm()
+            if NO_RE.search(low):
+                return self.deny()
         if RESUME_RE.search(low):
             return self.resume()
         if TASK_STATUS_RE.search(low):
             return self.status_report()
+        call = self._service_call(q)
+        if call is not None:
+            return self._run_new(q, [Step(1, call[0], dict(call[1]))], "local", replan=None)
         steps = self.compound_steps(q)
         if steps:
             return self._run_new(q, steps, "local", replan=None)
@@ -205,11 +229,60 @@ class Agent:
             self.store.save_agent_steps(task_id, [s.as_dict() for s in steps])
         self._emit(f"Plan ({planner}): " + ", ".join(f"{s.id}. {s.tool}" for s in steps))
         report = self.executor.execute(task_id, steps, replan=replan)
+        self._pending = (task_id, report.steps, replan, set()) if report.awaiting is not None else None
         return self._final(report)
 
     @staticmethod
     def _final(report: RunReport) -> str:
-        return f"Task #{report.task_id}: {report.summary}" if report.task_id else report.summary
+        text = f"Task #{report.task_id}: {report.summary}" if report.task_id else report.summary
+        if report.awaiting is not None:
+            text += " Say 'yes' to go ahead or 'no' to cancel."
+        return text
+
+    # ---- confirmations ---------------------------------------------------------------
+    def has_pending(self) -> bool:
+        if self._pending is not None:
+            return True
+        return bool(self.store is not None and self.store.agent_tasks(statuses=("awaiting_confirmation",), limit=1))
+
+    def _load_pending(self):
+        """After a restart the waiting task exists only in the store."""
+        tasks = self.store.agent_tasks(statuses=("awaiting_confirmation",), limit=1) if self.store is not None else []
+        if not tasks:
+            return None
+        t = tasks[0]
+        replan = self._replanner(t["goal"]) if t["planner"] not in ("", "local") else None
+        return (t["id"], [Step(**x) for x in t["steps"]], replan, set())
+
+    def confirm(self) -> str:
+        pending = self._pending or self._load_pending()
+        waiting = next((s for s in pending[1] if s.status == "awaiting"), None) if pending else None
+        if waiting is None:
+            self._pending = None
+            return "There is nothing waiting for your confirmation."
+        task_id, steps, replan, approved = pending
+        approved.add(waiting.id)
+        waiting.status = "pending"
+        self._emit(f"Confirmed: {self.registry.describe_call(waiting.tool, waiting.args)}")
+        report = self.executor.execute(task_id, steps, replan=replan, approved=approved)
+        self._pending = (task_id, report.steps, replan, approved) if report.awaiting is not None else None
+        return self._final(report)
+
+    def deny(self) -> str:
+        pending = self._pending or self._load_pending()
+        self._pending = None
+        if pending is None:
+            return "There is nothing to cancel."
+        task_id, steps, _replan, _approved = pending
+        for s in steps:
+            if s.status in ("awaiting", "pending"):
+                s.output = "You declined." if s.status == "awaiting" else "Cancelled."
+                s.status = "skipped"
+        if self.store is not None and task_id is not None:
+            self.store.save_agent_steps(task_id, [s.as_dict() for s in steps])
+            self.store.update_agent_task(task_id, status="cancelled", summary="Cancelled by you; nothing was done.")
+        self._emit("Cancelled by the user")
+        return f"Cancelled. Nothing was done{f' (task #{task_id})' if task_id else ''}."
 
     def resume(self) -> str:
         if self.store is None:

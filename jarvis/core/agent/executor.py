@@ -23,9 +23,10 @@ Replanner = Callable[[Step, list, list], "list[Step] | None"]
 @dataclass
 class RunReport:
     task_id: int | None
-    status: str          # done | partial | failed
+    status: str          # done | partial | failed | awaiting
     steps: list
     summary: str
+    awaiting: object = None      # the step waiting for the user's yes/no, if any
 
 
 def _short(text: str, n: int = 90) -> str:
@@ -35,11 +36,19 @@ def _short(text: str, n: int = 90) -> str:
 
 class Executor:
     def __init__(self, registry: ToolRegistry, *, store=None,
-                 progress: Callable[[str], None] | None = None, max_retries: int = MAX_RETRIES) -> None:
+                 progress: Callable[[str], None] | None = None, max_retries: int = MAX_RETRIES,
+                 policy=None, actionlog=None) -> None:
         self.registry = registry
         self.store = store
         self.progress = progress or (lambda msg: None)
         self.max_retries = max_retries
+        self.policy = policy          # jarvis.core.security.Policy, or None = everything allowed
+        self.actionlog = actionlog    # jarvis.core.security.ActionLog, or None
+
+    def _log(self, task_id, step: Step, decision: str, outcome: str, detail: str = "") -> None:
+        if self.actionlog is not None:
+            self.actionlog.record(tool=step.tool, args=step.args, decision=decision, outcome=outcome,
+                                  task_id=task_id, detail=detail)
 
     # ---- persistence (optional: tests and private mode run without a store)
     def _save(self, task_id, steps) -> None:
@@ -52,8 +61,10 @@ class Executor:
                                          attempts=step.attempts, output=step.output)
 
     def execute(self, task_id: int | None, steps: list[Step], *, replan: Replanner | None = None,
-                replans_left: int = MAX_REPLANS) -> RunReport:
+                replans_left: int = MAX_REPLANS, approved: set | None = None) -> RunReport:
         steps = list(steps)
+        approved = approved if approved is not None else set()
+        awaiting = None
         if self.store is not None and task_id is not None:
             self.store.update_agent_task(task_id, status="running")
         total = len(steps)
@@ -73,6 +84,25 @@ class Executor:
                 continue
 
             tool = self.registry.get(step.tool)
+
+            # Permissions come before anything runs. A model-written plan cannot talk its way past this.
+            if self.policy is not None and tool is not None:
+                verdict = self.policy.decide(tool)
+                if verdict.level == "deny":
+                    step.status = "failed"
+                    step.output = f"Blocked by your permissions settings ({verdict.reason})."
+                    self._update(task_id, step)
+                    self._log(task_id, step, "deny", "blocked", verdict.reason)
+                    self.progress(f"Step {step.id} blocked: {step.tool}")
+                    continue
+                if verdict.level == "confirm" and step.id not in approved:
+                    step.status = "awaiting"
+                    step.output = "Waiting for your confirmation."
+                    self._update(task_id, step)
+                    self._log(task_id, step, "confirm", "requested", verdict.reason)
+                    awaiting = step
+                    break
+            decision = "approved" if (self.policy is not None and step.id in approved) else "allow"
             allowed = 1 + (self.max_retries if tool is not None and tool.retryable else 0)
             result = None
             while step.attempts < allowed:
@@ -88,6 +118,7 @@ class Executor:
                 step.status = "done" if result.ok else "failed"
                 step.output = result.output
             self._update(task_id, step)
+            self._log(task_id, step, decision, "ok" if step.status == "done" else "failed", step.output)
             mark = "done" if step.status == "done" else "FAILED"
             self.progress(f"Step {step.id}/{max(total, len(steps))} {mark}: {step.tool} - {_short(step.output, 70)}")
 
@@ -109,14 +140,16 @@ class Executor:
                     if self.store is not None and task_id is not None:
                         self.store.update_agent_task(task_id, replans=MAX_REPLANS - replans_left)
                     self.progress(f"Replanned around step {step.id}: {len(new_steps)} new step(s).")
-        return self._report(task_id, steps)
+        return self._report(task_id, steps, awaiting)
 
-    def _report(self, task_id, steps) -> RunReport:
+    def _report(self, task_id, steps, awaiting=None) -> RunReport:
         counted = [s for s in steps if s.status != "replaced"]
         done = [s for s in counted if s.status == "done"]
         failed = [s for s in counted if s.status == "failed"]
         skipped = [s for s in counted if s.status == "skipped"]
-        if not failed and not skipped:
+        if awaiting is not None:
+            status = "awaiting"
+        elif not failed and not skipped:
             status = "done"
         elif done:
             status = "partial"
@@ -130,7 +163,10 @@ class Executor:
         if skipped:
             parts.append(f"Skipped {len(skipped)} step(s) that depended on a failure"
                          f"{' or may already have run' if any('may already' in s.output for s in skipped) else ''}.")
+        if awaiting is not None:
+            parts.append("Waiting for your confirmation to " + self.registry.describe_call(awaiting.tool, awaiting.args) + ".")
         summary = " ".join(parts)
         if self.store is not None and task_id is not None:
-            self.store.update_agent_task(task_id, status=status, summary=summary)
-        return RunReport(task_id, status, steps, summary)
+            self.store.update_agent_task(task_id, status="awaiting_confirmation" if awaiting is not None else status,
+                                         summary=summary)
+        return RunReport(task_id, status, steps, summary, awaiting)
