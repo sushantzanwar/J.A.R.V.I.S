@@ -10,12 +10,14 @@ from jarvis.core.context import ContextManager
 from jarvis.core.tasks import awaiting_approval
 
 HELP = (
-    "Offline mode: no language model is connected yet.\n"
-    "Built-in queries: status, tasks, time, about, help.\n"
-    "Memory: remember <fact>, what do you remember, what is my <key>, forget <key>, archive <key>, clear memories.\n"
-    "Search & Context: search <query>, search chat <query>, summarize conversation, summaries, rebuild index.\n"
-    "System controls: volume (mute/up/down), media (play/pause/next/prev/stop), "
-    "open <app> (notepad, calc, explorer, settings, terminal), battery, uptime, lock pc.\n"
+    "Open: open/launch/play <app, website or link> - open youtube, open notepad, open github.com/torvalds.\n"
+    "Power: shutdown, restart, go to sleep, sign out, lock, cancel shutdown (shutdown waits 10 s).\n"
+    "Sound: mute, volume up/down, play, pause, next track, previous track, stop music.\n"
+    "Info: status, battery, uptime, active window, time, date, tasks.\n"
+    "Memory: remember <fact>, what is my <key>, memories, forget <key>, archive <key>, clear memories.\n"
+    "Search: search <query>, search chat <query>, summarize conversation, rebuild index.\n"
+    "Chain: 'open youtube and then mute', 'mute, check the battery and then lock the pc'.\n"
+    "Tasks: resume task, task status. Anything else goes to the language model.\n"
     "Task approval is human-only: run  python bridge\\admin.py approve <id>  in a terminal."
 )
 

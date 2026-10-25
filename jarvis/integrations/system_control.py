@@ -13,8 +13,10 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import socket
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote_plus
 
 from jarvis.integrations.process import run_quiet
@@ -124,12 +126,49 @@ WEBSITES = {
     "drive": "https://drive.google.com",
     "linkedin": "https://www.linkedin.com",
     "instagram": "https://www.instagram.com",
+    "flipkart": "https://www.flipkart.com",
+    "canva": "https://www.canva.com",
+    "zomato": "https://www.zomato.com",
+    "swiggy": "https://www.swiggy.com",
+    "bing": "https://www.bing.com",
+    "outlook": "https://outlook.live.com",
+    "stackoverflow": "https://stackoverflow.com",
+    "telegram": "https://web.telegram.org",
+    "discord": "https://discord.com/app",
+    "twitch": "https://www.twitch.tv",
+    "pinterest": "https://www.pinterest.com",
+    "notion": "https://www.notion.so",
+    "figma": "https://www.figma.com",
+    "paypal": "https://www.paypal.com",
+    "ebay": "https://www.ebay.com",
+    "bbc": "https://www.bbc.com",
+    "docs": "https://docs.google.com",
+    "sheets": "https://sheets.google.com",
+    "slides": "https://slides.google.com",
+    "meet": "https://meet.google.com",
+    "calendar": "https://calendar.google.com",
+    "photos": "https://photos.google.com",
+    "translate": "https://translate.google.com",
+    "weather": "https://www.google.com/search?q=weather",
+    "news": "https://news.google.com",
+    "prime video": "https://www.primevideo.com",
+    "hotstar": "https://www.hotstar.com",
+    "youtube music": "https://music.youtube.com",
+    "leetcode": "https://leetcode.com",
+    "kaggle": "https://www.kaggle.com",
+    "huggingface": "https://huggingface.co",
+    "gemini": "https://gemini.google.com",
 }
 
 
 # A target carrying switches, pipes, redirects or separators is a command line, not an
 # application name. Those are never launched.
 _LOOKS_LIKE_COMMAND = re.compile(r"[&|;<>^%]|\s[-/][A-Za-z]|\.\.[\/]")
+
+
+# "github.com/torvalds", "youtube.com/watch?v=x&t=5": a host with a TLD, optionally followed by a path.
+# Checked before the command-line guard because real links legitimately contain & ? % and =.
+_DOMAIN_LIKE = re.compile(r"^(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}(?::\d+)?(?:[/?#]\S*)?$", re.IGNORECASE)
 
 
 def _power_delay() -> int:
@@ -219,7 +258,12 @@ class SystemControl:
     # ---- Launching: websites, installed apps, anything Windows can resolve ----
 
     def open_target(self, name: str) -> str:
-        """Open a website, an installed application, or any path Windows can resolve."""
+        """Open a website, an installed application, or any path Windows can resolve.
+
+        Websites open in the default browser (Chrome on this PC) through the shell, with the
+        URL passed whole, so '&' and '?' in a link are fine. A bare name that is not an app
+        is tried as a website (flipkart -> flipkart.com) before falling back to a search.
+        """
         clean = name.strip().strip('"').strip("'")
         low = clean.lower()
         if not low:
@@ -227,6 +271,9 @@ class SystemControl:
 
         if low.startswith(("http://", "https://")) and " " not in clean:
             return self._launch(clean, f"Opened {clean}.")
+        # A domain or link without a scheme: youtube.com/watch?v=x&t=5, github.com/torvalds
+        if _DOMAIN_LIKE.match(clean):
+            return self._launch("https://" + clean, f"Opened https://{clean}.")
 
         # Full access means "open anything you have", not "run an arbitrary command line".
         # ShellExecute will happily accept a string carrying switches, so a target that
@@ -236,14 +283,10 @@ class SystemControl:
                                 f"That looked like a command line rather than an app, "
                                 f"so I searched the web for '{low}' instead.")
 
-        site = WEBSITES.get(low) or WEBSITES.get(low.replace(" ", ""))
+        site_name = re.sub(r"^(?:the\s+)?(.*?)(?:\s+(?:website|site|web\s*page|dot\s*com))?$", r"\1", low).strip()
+        site = WEBSITES.get(site_name) or WEBSITES.get(site_name.replace(" ", ""))
         if site:
-            return self._launch(site, f"Opened {low} in your browser.")
-
-        if low.startswith(("http://", "https://")):
-            return self._launch(clean, f"Opened {clean}.")
-        if "." in low and " " not in low:
-            return self._launch("https://" + clean, f"Opened https://{clean}.")
+            return self._launch(site, f"Opened {site_name} in your browser.")
 
         target = self.allowed_apps.get(low)
         if target:
@@ -256,8 +299,44 @@ class SystemControl:
         hit = self._launch(clean, f"Opened {low}.")
         if not hit.startswith("Could not"):
             return hit
+
+        guessed = self._guess_site(site_name)
+        if guessed:
+            return self._launch(guessed, f"Opened {guessed} in your browser.")
         return self._launch(f"https://www.google.com/search?q={quote_plus(clean)}",
-                            f"I could not find an app called '{low}', so I searched the web for it.")
+                            f"I could not find an app or website called '{low}', so I searched the web for it.")
+
+    @staticmethod
+    def _guess_site(name: str) -> str | None:
+        """flipkart -> https://www.flipkart.com, if a plausible domain actually exists (DNS)."""
+        words = name.split()
+        # Short brand-like names only. "my college portal" is a personal phrase, not a domain,
+        # and guessing collegeportal.com would open somebody else's site.
+        if (not words or len(words) > 2 or words[0] in ("my", "our", "your", "this", "that")
+                or not re.fullmatch(r"[a-z0-9 -]+", name)):
+            return None
+        joined = "".join(words)
+        hosts = [f"www.{joined}{tld}" for tld in (".com", ".in", ".org", ".net", ".io", ".co")]
+
+        def resolves(host: str) -> bool:
+            try:
+                socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+                return True
+            except OSError:
+                return False
+
+        pool = ThreadPoolExecutor(max_workers=len(hosts))
+        try:
+            futures = [pool.submit(resolves, h) for h in hosts]
+            for host, fut in zip(hosts, futures):        # TLD preference order
+                try:
+                    if fut.result(timeout=4):
+                        return "https://" + host
+                except Exception:
+                    continue
+            return None
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
 
     def open_app(self, name: str) -> str:
         """Backwards-compatible alias; open_target handles apps, sites and paths."""
@@ -432,8 +511,11 @@ class SystemControl:
         # 4. Launcher: apps, websites, anything Windows can resolve
         m = OPEN_RE.match(q)
         if m:
-            target = m.group(1).strip()
-            if target and target not in ("status", "tasks", "queue", "time", "date", "help", "about"):
+            # q is lowercased for matching, but links are case-sensitive (video ids, paths),
+            # so the target is sliced from the original text, whose characters line up with q.
+            original = query.strip().rstrip(" .!?,;")
+            target = (original[m.start(1):m.end(1)] if len(original) == len(q) else m.group(1)).strip()
+            if target and target.lower() not in ("status", "tasks", "queue", "time", "date", "help", "about"):
                 return "open_target", {"name": target}
 
         # 5. System telemetry queries

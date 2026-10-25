@@ -105,12 +105,47 @@ class SleepAndTranscriptTests(unittest.TestCase):
 
     def test_trailing_punctuation_never_changes_the_command(self):
         self.assertEqual(self.sc.resolve("Shut down the computer."), ("shutdown", {}))
-        self.assertEqual(self.sc.resolve("Open YouTube."), ("open_target", {"name": "youtube"}))
+        self.assertEqual(self.sc.resolve("Open YouTube."), ("open_target", {"name": "YouTube"}))   # case kept for links
         self.assertEqual(self.sc.resolve("Mute!"), ("volume_mute", {}))
 
     def test_questions_are_not_commands(self):
         for text in ("why is the sky blue", "what is the solar system", "tell me about the history of Rome"):
             self.assertIsNone(self.sc.resolve(text), text)
+
+
+class WebsiteOpeningTests(unittest.TestCase):
+    """Chrome is the default browser; links go to it whole, with their case and query intact."""
+
+    def setUp(self):
+        self.sc = SystemControl()
+
+    def launched(self, text):
+        with mock.patch.object(SystemControl, "_launch", side_effect=lambda t, m: t):
+            return self.sc.execute_command(text)
+
+    def test_link_keeps_case_ampersand_and_query(self):
+        self.assertEqual(self.launched("open youtube.com/watch?v=dQw4w9WgXcQ&t=5"),
+                         "https://youtube.com/watch?v=dQw4w9WgXcQ&t=5")
+
+    def test_domains_and_paths_open_as_websites(self):
+        self.assertEqual(self.launched("open github.com/torvalds"), "https://github.com/torvalds")
+        self.assertEqual(self.launched("go to instagram.com"), "https://instagram.com")
+
+    def test_known_sites_and_site_suffix(self):
+        self.assertEqual(self.launched("open the canva website"), "https://www.canva.com")
+        self.assertEqual(self.launched("open stack overflow"), "https://stackoverflow.com")
+        self.assertEqual(self.launched("Open YouTube."), "https://www.youtube.com")
+
+    def test_unknown_brand_is_guessed_only_if_the_domain_exists(self):
+        with mock.patch("jarvis.integrations.system_control.socket.getaddrinfo",
+                        side_effect=lambda h, *a, **k: None if h == "www.acmeshop.in" else (_ for _ in ()).throw(OSError())):
+            self.assertEqual(SystemControl._guess_site("acmeshop"), "https://www.acmeshop.in")
+        with mock.patch("jarvis.integrations.system_control.socket.getaddrinfo", side_effect=OSError()):
+            self.assertIsNone(SystemControl._guess_site("acmeshop"))
+
+    def test_personal_phrases_are_searched_not_guessed(self):
+        self.assertIsNone(SystemControl._guess_site("my college portal"))
+        self.assertIsNone(SystemControl._guess_site("some very long phrase here"))
 
 
 class UnsupportedPartsTests(unittest.TestCase):

@@ -174,7 +174,8 @@ class AssistantSystemControlIntegrationTests(unittest.TestCase):
         self.assertIn("CPU 15%", ans_status)
 
         ans_help = assistant.answer("help", self.status, [], system_control=self.sc)
-        self.assertIn("System controls", ans_help)
+        self.assertIn("Power:", ans_help)
+        self.assertIn("Sound:", ans_help)
 
     def test_backend_records_activity_on_tool_execution(self):
         from tests.qt_helpers import gui_app, pump
