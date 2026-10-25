@@ -16,7 +16,9 @@ import time
 from typing import Callable
 
 from jarvis.core.agent.executor import Executor, RunReport
-from jarvis.core.agent.planner import Infeasible, LLMPlanner, PlanError, Step, split_compound, _CONNECTOR
+from jarvis.core.agent import planner as _planner
+from jarvis.core.agent.planner import (Infeasible, LLMPlanner, PlanError, Step, split_compound,
+                                       unsupported_parts, _CONNECTOR)
 from jarvis.core.agent.tools import build_registry
 from jarvis.core.assistant import is_builtin_query
 from jarvis.core.providers import CONNECTED, ProviderError
@@ -184,13 +186,18 @@ class Agent:
         steps = self.compound_steps(q)
         if steps:
             return self._run_new(q, steps, "local", replan=None)
+        _planner.UNSUPPORTED.clear()
         try:
             steps, planner = self._plan(q)
         except Infeasible as e:
             return f"I can't do that with the tools I have: {e}"
         except PlanError as e:
             return f"I couldn't plan that: {e}"
-        return self._run_new(q, steps, planner, replan=self._replanner(q))
+        unsupported = unsupported_parts(q) or list(_planner.UNSUPPORTED)
+        result = self._run_new(q, steps, planner, replan=self._replanner(q))
+        if unsupported:
+            result += " I could NOT do: " + "; ".join(unsupported) + " (no tool for that)."
+        return result
 
     def _run_new(self, goal: str, steps: list[Step], planner: str, replan) -> str:
         task_id = self.store.create_agent_task(goal, planner) if self.store is not None else None

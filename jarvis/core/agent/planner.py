@@ -17,6 +17,7 @@ from typing import Callable
 from jarvis.core.agent.tools import ToolRegistry
 
 MAX_STEPS = 8
+UNSUPPORTED: list = []   # parts of the last plan the model said it cannot do
 
 
 class PlanError(ValueError):
@@ -40,6 +41,25 @@ class Step:
 
     def as_dict(self) -> dict:
         return asdict(self)
+
+
+# Verbs no registered tool can perform. A 2B planner will not reliably admit this itself, so
+# the check is deterministic: if the request asks for one, the summary says it was NOT done.
+UNSUPPORTED_VERB = re.compile(
+    r"\b(type|send|email|e-mail|click|double[- ]click|press|call|text|message|download|upload|install|uninstall|"
+    r"delete|remove|copy|paste|save|print|screenshot|record|book|buy|order|pay|post|tweet|log\s+in|sign\s+in)\b"
+    r"[^,;.]*", re.IGNORECASE)
+
+
+def unsupported_parts(goal: str) -> list[str]:
+    """Parts of the request that need an ability the agent does not have."""
+    out = []
+    for m in UNSUPPORTED_VERB.finditer(goal):
+        part = " ".join(m.group(0).split())
+        part = re.split(r"\s+(?:and|then|after)\s+", part, 1, flags=re.IGNORECASE)[0]
+        if part and part.lower() not in (p.lower() for p in out):
+            out.append(part[:60])
+    return out[:4]
 
 
 def extract_json(text: str) -> dict:
@@ -121,6 +141,9 @@ def validate_plan(data: dict, registry: ToolRegistry, *, first_id: int = 1,
                 raise PlanError(f"step {n} depends on step {d}, which is missing or comes later")
         steps.append(Step(new_id, tool, {k: str(v) for k, v in args.items()}, new_deps,
                           str(raw.get("success", ""))[:200]))
+    unsupported = data.get("unsupported") or []
+    if isinstance(unsupported, list):
+        UNSUPPORTED[:] = [str(u)[:80] for u in unsupported if str(u).strip()][:5]
     return order_power_last(steps, registry, first_id)
 
 
@@ -184,14 +207,17 @@ def split_compound(text: str, resolve: Resolver) -> list[Step] | None:
 
 PLANNER_SYSTEM = """You plan actions for JARVIS, an assistant that fully controls a Windows PC.
 Reply with JSON only, in exactly this shape:
-{"steps": [{"id": 1, "tool": "<tool name>", "args": {"<arg>": "<value>"}, "depends_on": [], "success": "<what success looks like>"}]}
+{"steps": [{"id": 1, "tool": "<tool name>", "args": {"<arg>": "<value>"}, "depends_on": [], "success": "<what success looks like>"}], "unsupported": []}
 Rules:
 - Use ONLY the tools listed, with exactly the argument names shown. Never invent a tool.
 - Use as few steps as possible, at most 8. Include ONLY steps the goal asks for; never add extra actions.
 - To search for something use search_web. open_target only opens a real app, website or file.
 - depends_on lists ids of earlier steps that must succeed first; use [] when a step is independent.
 - For a question, or for writing or explaining something, use ask_model.
-- If the goal cannot be done with these tools, reply {"steps": [], "reason": "<why>"}."""
+- If the goal cannot be done with these tools, reply {"steps": [], "reason": "<why>"}.
+- If only PART of the goal is possible (for example there is no tool to type text, send email or click),
+  plan the possible part and list the rest in "unsupported": ["<part you cannot do>"]. Never substitute
+  a different action, and never use ask_model to pretend an action was done."""
 
 
 def build_prompt(goal: str, registry: ToolRegistry, context: str = "") -> str:

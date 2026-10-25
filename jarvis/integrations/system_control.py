@@ -82,8 +82,10 @@ RESTART_RE = re.compile(
     r"(?:\s+(?:the\s+|my\s+)?(?:pc|computer|machine|system|laptop|windows))?"
     r"(?:\s+(?:now|immediately|please))?" + _END)
 SLEEP_RE = re.compile(
-    r"^(?:go\s+to\s+sleep|sleep)(?:\s+(?:the\s+|my\s+)?(?:pc|computer|laptop))?\s*\??$"
-    r"|^put\s+(?:the\s+|my\s+)?(?:pc|computer|laptop)\s+to\s+sleep\s*\??$")
+    r"^(?:please\s+)?(?:(?:go|going)\s+to\s+sleep|sleep(?:\s+down)?|sleep\s+mode|hibernate)"
+    r"(?:\s+(?:the\s+|my\s+|this\s+)?(?:pc|computer|laptop|machine|system))?\s*\??$"
+    r"|^(?:please\s+)?(?:put|set|send|switch|turn)\s+(?:the\s+|my\s+|this\s+)?(?:pc|computer|laptop|machine|system)"
+    r"\s+(?:to|in|into|on)\s+(?:sleep|hibernate)(?:\s+mode)?\s*\??$")
 SIGNOUT_RE = re.compile(
     r"^(?:sign|log)\s*(?:me\s+)?(?:out|off)(?:\s+of\s+windows)?" + _END)
 CANCEL_POWER_RE = re.compile(
@@ -391,7 +393,8 @@ class SystemControl:
         The single grammar for device commands: execute_command runs what this returns,
         and the agent planner uses it to turn "open youtube and then mute" into steps.
         """
-        q = query.strip().lower()
+        # Speech recognisers end transcripts with ". ", "?" or "!", which no pattern expects.
+        q = query.strip().lower().rstrip(" .!?,;")
 
         # 1. Volume
         if q in ("mute", "unmute", "mute volume", "toggle mute", "silence audio"):

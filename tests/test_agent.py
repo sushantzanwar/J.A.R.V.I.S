@@ -92,6 +92,47 @@ class CompoundTests(unittest.TestCase):
         self.assertFalse(self.agent.wants("why is the sky blue"))
 
 
+class SleepAndTranscriptTests(unittest.TestCase):
+    """Phrasings from real use, including the trailing period speech recognisers add."""
+
+    def setUp(self):
+        self.sc = FakeControl()
+
+    def test_sleep_phrasings(self):
+        for text in ("Put this laptop in sleep mode.", "go to sleep", "sleep down the laptop",
+                     "Put my laptop to sleep.", "sleep mode", "hibernate the pc", "Go to sleep."):
+            self.assertEqual(self.sc.resolve(text), ("sleep_pc", {}), text)
+
+    def test_trailing_punctuation_never_changes_the_command(self):
+        self.assertEqual(self.sc.resolve("Shut down the computer."), ("shutdown", {}))
+        self.assertEqual(self.sc.resolve("Open YouTube."), ("open_target", {"name": "youtube"}))
+        self.assertEqual(self.sc.resolve("Mute!"), ("volume_mute", {}))
+
+    def test_questions_are_not_commands(self):
+        for text in ("why is the sky blue", "what is the solar system", "tell me about the history of Rome"):
+            self.assertIsNone(self.sc.resolve(text), text)
+
+
+class UnsupportedPartsTests(unittest.TestCase):
+    def test_actions_without_a_tool_are_named(self):
+        from jarvis.core.agent.planner import unsupported_parts
+        self.assertEqual(unsupported_parts("open notepad and type hello"), ["type hello"])
+        self.assertEqual(unsupported_parts("send an email to mom"), ["send an email to mom"])
+        self.assertEqual(unsupported_parts("mute and then download the report and open excel"),
+                         ["download the report"])
+
+    def test_supported_requests_report_nothing(self):
+        from jarvis.core.agent.planner import unsupported_parts
+        for g in ("open youtube and search for lofi", "put the laptop to sleep", "mute and lock the pc"):
+            self.assertEqual(unsupported_parts(g), [], g)
+
+    def test_summary_says_what_was_not_done(self):
+        ollama = FakeLLM([plan_json({"tool": "open_target", "args": {"name": "notepad"}})])
+        out = Agent(FakeControl(), ollama_factory=lambda: ollama).handle("open notepad and type hello")
+        self.assertIn("1 of 1", out)
+        self.assertIn("could NOT do: type hello", out)
+
+
 class ValidationTests(unittest.TestCase):
     def setUp(self):
         self.reg = build_registry(FakeControl())
