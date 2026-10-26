@@ -24,17 +24,25 @@ from jarvis.core.agent.tools import Tool
 from jarvis.core.security.vault import Vault, VaultError
 from jarvis.integrations.services.base import Service
 
-SCOPES = [
-    "https://www.googleapis.com/auth/gmail.readonly",
-    "https://www.googleapis.com/auth/gmail.send",
-    "https://www.googleapis.com/auth/calendar.events",
-    "https://www.googleapis.com/auth/drive.readonly",
-]
+GMAIL_READ = "https://www.googleapis.com/auth/gmail.readonly"
+GMAIL_SEND = "https://www.googleapis.com/auth/gmail.send"
+CALENDAR = "https://www.googleapis.com/auth/calendar.events"
+DRIVE_READ = "https://www.googleapis.com/auth/drive.readonly"
+CONTACTS = "https://www.googleapis.com/auth/contacts.readonly"
+TASKS = "https://www.googleapis.com/auth/tasks"
+DOCS = "https://www.googleapis.com/auth/documents"
+SHEETS = "https://www.googleapis.com/auth/spreadsheets"
+SLIDES = "https://www.googleapis.com/auth/presentations"
+FORMS = "https://www.googleapis.com/auth/forms.body"
+FORMS_RESPONSES = "https://www.googleapis.com/auth/forms.responses.readonly"
+SCOPES = [GMAIL_READ, GMAIL_SEND, CALENDAR, DRIVE_READ, CONTACTS, TASKS, DOCS, SHEETS, SLIDES, FORMS, FORMS_RESPONSES]
 TOKEN_KEY = "google_token"
 SECRET_ENV = "JARVIS_GOOGLE_CLIENT_SECRET"
 MAX_RESULTS = 5
 _EMAIL = re.compile(r"^[^@\s,;<>]+@[^@\s,;<>]+\.[^@\s,;<>]+$")
 
+RECONNECT = ("Could not use that Google feature: it needs a permission you have not granted yet. "
+             "Say 'connect google' again and tick every box.")
 NOT_CONNECTED = ("Could not use Google: it is not connected yet. Say 'connect google' (one-time setup is described "
                  "in jarvis/integrations/services/google.py).")
 
@@ -76,7 +84,8 @@ class GoogleService(Service):
         data = self._token()
         if not data:
             return None
-        creds = Credentials.from_authorized_user_info(data, SCOPES)
+        # Refresh with the scopes the token was actually granted; asking for new ones makes Google reject it.
+        creds = Credentials.from_authorized_user_info(data, data.get("scopes") or SCOPES)
         if not creds.valid and creds.refresh_token:
             from google.auth.transport.requests import Request
             creds.refresh(Request())
@@ -111,8 +120,14 @@ class GoogleService(Service):
         from googleapiclient.discovery import build
         return build(name, version, credentials=creds, cache_discovery=False)
 
-    def _call(self, api: str, version: str, fn) -> str:
+    def _granted(self, scope: str) -> bool:
+        data = self._token() or {}
+        return scope in (data.get("scopes") or [])
+
+    def _call(self, api: str, version: str, fn, scope: str | None = None) -> str:
         """Run fn(service) with uniform not-connected and API-error reporting."""
+        if scope and self._build is None and self.configured() and not self._granted(scope):
+            return RECONNECT            # connected before this feature existed
         try:
             svc = self._api(api, version)
         except Exception as e:

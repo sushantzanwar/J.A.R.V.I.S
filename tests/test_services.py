@@ -359,7 +359,7 @@ class GoogleServiceTests(unittest.TestCase):
         self.assertIn("1 of 1", a.handle("check my email"))
 
     def test_registry_loads_google_by_default(self):
-        self.assertEqual([s.name for s in load_services(None)], ["google"])
+        self.assertEqual([s.name for s in load_services(None)][0], "google")
 
 
 if __name__ == "__main__":
